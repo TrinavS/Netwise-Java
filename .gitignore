@@ -1,0 +1,8 @@
+# Java compiled output
+backend/out/
+*.class
+
+# IDE settings
+.vscode/
+.idea/
+*.iml
