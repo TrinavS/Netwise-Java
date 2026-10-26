@@ -4,31 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#101b35">
-  <title>Netwise ISP | Customer Portal</title>
+  <title>ISP | Customer Portal</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#" aria-label="Netwise home">
+      <a class="brand" href="#" aria-label="ISP home">
         <span class="brand-mark">N</span>
-        <span><strong>netwise</strong><small>INTERNET SERVICES</small></span>
+        <span><strong id="brand-name">netwise</strong><small id="brand-tagline">INTERNET SERVICES</small></span>
       </a>
 
       <div class="workspace-label">WORKSPACE</div>
       <nav class="nav-list" aria-label="Main navigation">
         <button class="nav-item active" data-page="dashboard"><span class="nav-icon">▦</span> Dashboard</button>
-        <button class="nav-item" data-page="plans"><span class="nav-icon">◈</span> Internet plans</button>
+        <button class="nav-item" data-page="plans"><span class="nav-icon">◈</span> <span data-label="plans">Internet plans</span></button>
         <button class="nav-item" data-page="usage"><span class="nav-icon">◔</span> Data usage</button>
         <button class="nav-item" data-page="billing"><span class="nav-icon">▤</span> Billing</button>
-        <button class="nav-item" data-page="complaints"><span class="nav-icon">◎</span> Support & complaints <span class="nav-count" id="complaint-count">2</span></button>
+        <button class="nav-item" data-page="complaints"><span class="nav-icon">◎</span> <span data-label="support">Support & complaints</span> <span class="nav-count" id="complaint-count">2</span></button>
       </nav>
 
       <div class="sidebar-bottom">
         <div class="help-card">
           <div class="help-icon">?</div>
           <strong>Need a hand?</strong>
-          <p>Our support team is here to help.</p>
+          <p id="support-copy">Our support team is here to help.</p>
           <button class="text-button" data-page="complaints">Contact support <span>↗</span></button>
         </div>
         <div class="sidebar-user">
@@ -42,7 +42,7 @@
     <main class="main-area">
       <header class="topbar">
         <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
-        <div class="breadcrumbs"><span>Netwise</span><span class="crumb-slash">/</span><strong id="breadcrumb-current">Dashboard</strong></div>
+        <div class="breadcrumbs"><span id="breadcrumb-brand">Netwise</span><span class="crumb-slash">/</span><strong id="breadcrumb-current">Dashboard</strong></div>
         <div class="topbar-actions">
           <label class="role-switch"><span>View as</span>
             <select id="role-select" aria-label="Choose view">
@@ -50,6 +50,8 @@
               <option value="admin">Admin demo</option>
             </select>
           </label>
+          <label class="customer-switch" id="customer-switch-wrap"><span>Account</span><select id="customer-select" aria-label="Choose customer"></select></label>
+          <button class="button button-quiet settings-button" id="settings-button" type="button">Customize</button>
           <button class="icon-button notification-button" id="notifications-button" aria-label="Notifications">♧<i></i></button>
           <div class="avatar avatar-top" id="top-avatar">RS</div>
         </div>
@@ -57,7 +59,7 @@
 
       <section class="page-content">
         <div id="page-root"></div>
-        <footer class="footer"><span>© 2026 Netwise Internet Services</span><span><span class="status-dot"></span> All systems operational <span class="footer-divider">·</span> Demo portal</span></footer>
+        <footer class="footer"><span id="footer-brand">© 2026 Netwise Internet Services</span><span><span class="status-dot"></span> <span id="service-status">All systems operational</span> <span class="footer-divider">·</span> <span id="portal-mode">Demo portal</span></span></footer>
       </section>
     </main>
   </div>
@@ -71,6 +73,7 @@
       <div class="modal-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-primary" id="modal-submit" value="default">Save</button></div>
     </form>
   </dialog>
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
