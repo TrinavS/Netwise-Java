@@ -1,9 +1,16 @@
 package isp;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.Arrays;
 
 public class ComplaintManager {
+    private static final String[] VALID_STATUSES = {"PENDING", "IN_PROGRESS", "RESOLVED", "CLOSED"};
     private final ArrayList<Complaint> complaints = new ArrayList<>();
+    private final Set<String> complaintTypes = new HashSet<>();
 
     public synchronized void addComplaint(Complaint complaint)
             throws InvalidComplaintException {
@@ -11,7 +18,7 @@ public class ComplaintManager {
                 isBlank(complaint.getComplaintId()) ||
                 isBlank(complaint.getCustomerId()) ||
                 isBlank(complaint.getComplaintType()) ||
-                isBlank(complaint.getDescription())) {
+                isBlank(complaint.getDescription()) || complaint.getDescription().trim().length() < 8) {
             throw new InvalidComplaintException("Complaint details cannot be empty.");
         }
 
@@ -20,6 +27,7 @@ public class ComplaintManager {
         }
 
         complaints.add(complaint);
+        complaintTypes.add(complaint.getComplaintType());
         System.out.println("Complaint registered successfully!");
     }
 
@@ -47,6 +55,20 @@ public class ComplaintManager {
         }
     }
 
+    public synchronized List<Complaint> getComplaints() {
+        return Collections.unmodifiableList(new ArrayList<>(complaints));
+    }
+
+    public synchronized Set<String> getComplaintTypes() {
+        return Collections.unmodifiableSet(new HashSet<>(complaintTypes));
+    }
+
+    public synchronized void removeForCustomer(int customerId) {
+        complaints.removeIf(complaint -> Integer.parseInt(complaint.getCustomerId()) == customerId);
+        complaintTypes.clear();
+        for (Complaint complaint : complaints) complaintTypes.add(complaint.getComplaintType());
+    }
+
     public synchronized void updateStatus(String complaintId, String newStatus)
             throws InvalidComplaintException {
         Complaint complaint = findComplaint(complaintId);
@@ -54,11 +76,7 @@ public class ComplaintManager {
             throw new InvalidComplaintException("Complaint not found.");
         }
 
-        if (newStatus == null ||
-                !(newStatus.equalsIgnoreCase("PENDING") ||
-                  newStatus.equalsIgnoreCase("IN_PROGRESS") ||
-                  newStatus.equalsIgnoreCase("RESOLVED") ||
-                  newStatus.equalsIgnoreCase("CLOSED"))) {
+        if (newStatus == null || Arrays.stream(VALID_STATUSES).noneMatch(s -> s.equalsIgnoreCase(newStatus))) {
             throw new InvalidComplaintException("Invalid complaint status.");
         }
 

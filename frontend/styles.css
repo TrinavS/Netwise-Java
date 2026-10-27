@@ -199,6 +199,24 @@ td strong { color: #26324b; font-weight: 700; }
 .modal-close { font-size: 24px; border: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 10px; }
 .modal .form-field:last-child { margin-bottom: 0; }
+.report-job { margin: -8px 0 19px; padding: 17px 19px; }
+.report-job-head, .row-actions { display: flex; align-items: center; gap: 8px; }
+.report-job-head { margin-bottom: 12px; }
+.report-job-head > div { flex: 1; }
+.report-job-head strong { color: #26324b; font-size: 12px; }
+.report-job-head p { color: #8b95a7; font-size: 11px; margin: 4px 0 0; }
+.row-actions { white-space: nowrap; }
+.cell-sub { display: block; margin-top: 4px; color: #939caf; font-size: 10px; }
+.admin-search { margin: 0; padding: 0 21px 13px; }
+.section-note { margin-top: 18px; }
+.section-no-top { margin-top: 0; }
+.usage-gap { margin-top: 17px; }
+.usage-meter { min-width: 220px; flex: 1; max-width: 430px; }
+.usage-hint { margin-top: 10px; }
+.form-end { align-self: end; }
+.unit { font-size: 13px; font-weight: 500; }
+.modal-copy { margin-bottom: 16px; }
+.detail-copy { margin-top: 16px; }
 
 @media (max-width: 1150px) {
   .sidebar { width: 220px; flex-basis: 220px; }
@@ -235,4 +253,7 @@ td strong { color: #26324b; font-weight: 700; }
   .form-grid { grid-template-columns: 1fr; }
   .form-field.full { grid-column: auto; }
   .usage-bar-row { grid-template-columns: 72px 1fr 54px; gap: 8px; }
+  .report-job-head { align-items: flex-start; flex-wrap: wrap; }
+  .admin-search { padding: 0 16px 13px; }
+  .row-actions { flex-wrap: wrap; }
 }
