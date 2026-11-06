@@ -12,8 +12,9 @@ Start the Java server from the project root using the commands in the root `READ
 - Plan catalog and subscription changes
 - Admin plan catalog create, edit, and remove actions
 - Usage tracking and monthly usage history
-- Invoice history, payment status updates, receipt, and CSV statement export
+- Immutable invoice history with overdue status, simulated payment history, receipts, and CSV statement export
+- Plan changes scheduled for the next billing period so issued invoices retain their original amounts
 - Support ticket creation, search, detail view, and admin status updates
 - Admin customer search, add/edit/remove operations, and asynchronous report generation/cancellation
 
-Portal brand, display locale, and support copy are browser preferences. Project records are managed by the Java backend and reset when its in-memory server stops.
+Portal brand, display locale, and support copy are browser preferences. Project records are persisted by the Java backend in PostgreSQL and survive server restarts.

@@ -2,7 +2,6 @@ package isp;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -10,12 +9,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Vector;
 import java.util.regex.Pattern;
+import java.sql.SQLException;
 
-/** Synchronized in-memory domain service shared by every HTTP request. */
+/** Synchronized domain service shared by HTTP requests and persisted through JDBC. */
 public class IspService {
     private static final double TAX_RATE = 0.18;
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[\\w.!#$%&'*+/=?^`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$");
     private static final Pattern PHONE_PATTERN = Pattern.compile("^(?=(?:.*\\d){8,16}$)[0-9+() -]{8,24}$");
+    private final JdbcStore store;
 
     private final List<Customer> customers = new ArrayList<>();
     private final Map<Integer, Customer> customerIndex = new LinkedHashMap<>();
@@ -28,10 +29,147 @@ public class IspService {
     private int nextPlanId = 4;
     private int nextSubscriptionId = 3;
     private int nextInvoiceNumber = 1044;
+    private int nextPaymentNumber = 1002;
     private int nextComplaintNumber = 103;
 
     public IspService() {
+        this(null);
+    }
+
+    public IspService(JdbcStore store) {
+        this.store = store;
+        if (store != null) {
+            try {
+                store.initialize();
+                String savedState = store.load();
+                if (savedState != null) {
+                    restore(Json.object(Json.parse(savedState)));
+                    return;
+                }
+            } catch (SQLException | RuntimeException exception) {
+                throw new IllegalStateException("Could not initialize PostgreSQL persistence: " + exception.getMessage(), exception);
+            }
+        }
         seed();
+        persistState();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void restore(Map<String, Object> state) {
+        Map<Integer, InternetPlan> planById = new LinkedHashMap<>();
+        for (Object value : list(state, "plans")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            try {
+                InternetPlan plan = planFromInput(intValue(row, "id"), row);
+                plans.add(plan);
+                planById.put(plan.getPlanId(), plan);
+                nextPlanId = Math.max(nextPlanId, plan.getPlanId() + 1);
+            } catch (InvalidPlanException exception) {
+                throw new IllegalStateException("Invalid saved plan: " + exception.getMessage(), exception);
+            }
+        }
+        for (Object value : list(state, "customers")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            Customer customer = new Customer(intValue(row, "id"), text(row, "name"), text(row, "email"),
+                    text(row, "phone"), optionalText(row, "address"));
+            customers.add(customer);
+            customerIndex.put(customer.getCustomerId(), customer);
+            nextCustomerId = Math.max(nextCustomerId, customer.getCustomerId() + 1);
+        }
+        Map<Integer, Map<String, Object>> usageRows = new LinkedHashMap<>();
+        Object rawUsage = state.get("usage");
+        if (rawUsage instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                usageRows.put(Integer.parseInt(String.valueOf(entry.getKey())), (Map<String, Object>) entry.getValue());
+            }
+        }
+        for (Object value : list(state, "subscriptions")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            int customerId = intValue(row, "customerId"), planId = intValue(row, "planId");
+            Customer customer = customerIndex.get(customerId);
+            InternetPlan plan = planById.get(planId);
+            if (customer == null || plan == null) continue;
+            Subscription subscription = new Subscription(text(row, "id"), customer, plan,
+                    LocalDate.parse(text(row, "startDate")), intValue(row, "daysRemaining"));
+            if ("CANCELLED".equals(text(row, "status"))) subscription.cancelSubscription();
+            Object pendingId = row.get("pendingPlanId");
+            if (pendingId instanceof Number number && planById.containsKey(number.intValue())) {
+                subscription.schedulePlanChange(planById.get(number.intValue()), LocalDate.parse(text(row, "changeEffectiveDate")));
+            }
+            subscriptions.add(subscription);
+            nextSubscriptionId = Math.max(nextSubscriptionId, parseSuffix(subscription.getSubscriptionId()) + 1);
+        }
+        for (Map.Entry<Integer, Map<String, Object>> entry : usageRows.entrySet()) {
+            double limit = 0;
+            Subscription subscription = activeSubscription(entry.getKey());
+            if (subscription != null) limit = subscription.getPlan().getDataLimit();
+            Map<String, Object> row = entry.getValue();
+            List<Double> history = new ArrayList<>();
+            for (Object item : list(row, "history")) history.add(((Number) item).doubleValue());
+            usageByCustomer.put(entry.getKey(), new Usage(limit, doubleValue(row, "used"), history));
+        }
+        for (Object value : list(state, "bills")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            List<PaymentRecord> payments = new ArrayList<>();
+            for (Object paymentValue : list(row, "payments")) {
+                Map<String, Object> payment = (Map<String, Object>) paymentValue;
+                PaymentRecord record = new PaymentRecord(text(payment, "paymentId"), doubleValue(payment, "amount"),
+                        LocalDate.parse(text(payment, "paidOn")), text(payment, "method"));
+                payments.add(record);
+                nextPaymentNumber = Math.max(nextPaymentNumber, parseSuffix(record.getPaymentId()) + 1);
+            }
+            String period = text(row, "billingPeriod");
+            Invoice invoice = new Invoice(text(row, "id"), intValue(row, "customerId"), text(row, "customerName"),
+                    YearMonth.parse(period), intValue(row, "planId"), text(row, "planName"), doubleValue(row, "planPrice"),
+                    doubleValue(row, "taxRate"), LocalDate.parse(text(row, "dueDate")), text(row, "paymentStatus"), payments);
+            invoices.add(invoice);
+            nextInvoiceNumber = Math.max(nextInvoiceNumber, parseSuffix(invoice.getId()) + 1);
+        }
+        for (Object value : list(state, "complaints")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            Customer customer = customerIndex.get(intValue(row, "customerId"));
+            if (customer == null) continue;
+            Complaint complaint = new Complaint(text(row, "id"), customer, text(row, "type"), text(row, "description"));
+            try {
+                complaintManager.addComplaint(complaint);
+                complaintManager.updateStatus(complaint.getComplaintId(), text(row, "status"));
+            } catch (InvalidComplaintException exception) {
+                throw new IllegalStateException("Invalid saved complaint: " + exception.getMessage(), exception);
+            }
+            nextComplaintNumber = Math.max(nextComplaintNumber, parseSuffix(complaint.getComplaintId()) + 1);
+        }
+    }
+
+    private void persistState() {
+        if (store == null) return;
+        try { store.save(Json.stringify(snapshotWithoutPersist())); }
+        catch (SQLException exception) { throw new IllegalStateException("Could not save data to PostgreSQL: " + exception.getMessage(), exception); }
+    }
+
+    private Map<String, Object> snapshotWithoutPersist() {
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("customers", customers.stream().map(this::customerJson).toList());
+        root.put("plans", plans.stream().map(this::planJson).toList());
+        root.put("subscriptions", subscriptions.stream().map(this::subscriptionJson).toList());
+        Map<String, Object> usage = new LinkedHashMap<>();
+        usageByCustomer.forEach((id, entry) -> usage.put(String.valueOf(id), usageJson(entry)));
+        root.put("usage", usage);
+        root.put("bills", invoices.stream().map(this::invoiceJson).toList());
+        root.put("complaints", complaintManager.getComplaints().stream().map(this::complaintJson).toList());
+        root.put("complaintTypes", complaintManager.getComplaintTypes());
+        return root;
+    }
+
+    private static List<?> list(Map<String, Object> object, String key) {
+        Object value = object.get(key);
+        return value instanceof List<?> list ? list : List.of();
+    }
+    private static int intValue(Map<String, Object> object, String key) { return ((Number) object.get(key)).intValue(); }
+    private static double doubleValue(Map<String, Object> object, String key) { return ((Number) object.get(key)).doubleValue(); }
+    private static int parseSuffix(String value) {
+        int dash = value.lastIndexOf('-');
+        try { return Integer.parseInt(dash >= 0 ? value.substring(dash + 1) : value.replaceAll("^.*?(\\d+)$", "$1")); }
+        catch (RuntimeException ignored) { return 1; }
     }
 
     private void seed() {
@@ -50,9 +188,13 @@ public class IspService {
         usageByCustomer.put(101, new Usage(300, 132.4, List.of(24.0, 38.0, 29.0, 41.4)));
         usageByCustomer.put(102, new Usage(500, 291.7, List.of(64.0, 81.0, 70.0, 76.7)));
 
-        invoices.add(new Invoice("INV-2026-1042", 101, "October 2026", 699, TAX_RATE, "2026-10-25", "UNPAID"));
-        invoices.add(new Invoice("INV-2026-1031", 101, "September 2026", 699, TAX_RATE, "2026-09-25", "PAID"));
-        invoices.add(new Invoice("INV-2026-1043", 102, "October 2026", 799, TAX_RATE, "2026-10-25", "UNPAID"));
+        invoices.add(new Invoice("INV-2026-1042", 101, rahul.getName(), YearMonth.of(2026, 10), 2, "Home Plus", 699,
+                TAX_RATE, LocalDate.of(2026, 10, 25), "UNPAID", List.of()));
+        invoices.add(new Invoice("INV-2026-1031", 101, rahul.getName(), YearMonth.of(2026, 9), 2, "Home Plus", 699,
+                TAX_RATE, LocalDate.of(2026, 9, 25), "PAID",
+                List.of(new PaymentRecord("PAY-2026-1001", 824.82, LocalDate.of(2026, 9, 24), "SIMULATED"))));
+        invoices.add(new Invoice("INV-2026-1043", 102, priya.getName(), YearMonth.of(2026, 10), 3, "Premium 500", 799,
+                TAX_RATE, LocalDate.of(2026, 10, 25), "UNPAID", List.of()));
         try {
             complaintManager.addComplaint(new Complaint("CMP101", rahul, "Slow Internet", "Internet speed is very slow."));
             complaintManager.updateStatus("CMP101", "IN_PROGRESS");
@@ -63,6 +205,8 @@ public class IspService {
     }
 
     public synchronized Map<String, Object> snapshot() {
+        applyCurrentBillingCycle();
+        persistState();
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("customers", customers.stream().map(this::customerJson).toList());
         root.put("plans", plans.stream().map(this::planJson).toList());
@@ -74,6 +218,22 @@ public class IspService {
         root.put("complaints", complaintManager.getComplaints().stream().map(this::complaintJson).toList());
         root.put("complaintTypes", complaintManager.getComplaintTypes());
         return root;
+    }
+
+    /** Look up a customer by numeric account ID. */
+    public synchronized Map<String, Object> findCustomer(int customerId) throws CustomerNotFoundException {
+        Customer customer = customerIndex.get(customerId);
+        if (customer == null) throw new CustomerNotFoundException("Customer #" + customerId + " was not found.");
+        return customerJson(customer);
+    }
+
+    /** Overloaded customer lookup by email address. */
+    public synchronized Map<String, Object> findCustomer(String email) throws CustomerNotFoundException {
+        if (email == null || email.isBlank()) throw new IllegalArgumentException("Email is required for customer lookup.");
+        for (Customer customer : customers) {
+            if (customer.getEmail().equalsIgnoreCase(email.trim())) return customerJson(customer);
+        }
+        throw new CustomerNotFoundException("No customer with email " + email.trim() + " was found.");
     }
 
     public synchronized Map<String, Object> addCustomer(Map<String, Object> input) throws InvalidCustomerException {
@@ -88,6 +248,7 @@ public class IspService {
         Customer customer = new Customer(id, name, email, phone, address);
         customers.add(customer); customerIndex.put(id, customer);
         usageByCustomer.put(id, new Usage(0));
+        persistState();
         return customerJson(customer);
     }
 
@@ -101,6 +262,7 @@ public class IspService {
         if (!EMAIL_PATTERN.matcher(email).matches()) throw new InvalidCustomerException("Enter a valid email address.");
         if (!PHONE_PATTERN.matcher(phone).matches()) throw new InvalidCustomerException("Enter a valid phone number (8 to 16 characters).");
         customer.updateProfile(name, email, phone, address);
+        persistState();
         return customerJson(customer);
     }
 
@@ -110,13 +272,14 @@ public class IspService {
         customers.remove(customer);
         subscriptions.removeIf(subscription -> subscription.getCustomer().getCustomerId() == id);
         usageByCustomer.remove(id);
-        invoices.removeIf(invoice -> invoice.getCustomerId() == id);
         complaintManager.removeForCustomer(id);
+        persistState();
     }
 
     public synchronized Map<String, Object> addPlan(Map<String, Object> input) throws InvalidPlanException {
         InternetPlan plan = planFromInput(nextPlanId++, input);
         plans.add(plan);
+        persistState();
         return planJson(plan);
     }
 
@@ -127,22 +290,26 @@ public class IspService {
         InternetPlan updated = planFromInput(id, input);
         plans.set(plans.indexOf(existing), updated);
         for (Subscription subscription : subscriptions) {
-            if (subscription.getPlan().getPlanId() == id && "ACTIVE".equals(subscription.getStatus())) {
+            boolean currentPlan = subscription.getPlan().getPlanId() == id;
+            boolean scheduledPlan = subscription.getPendingPlan() != null && subscription.getPendingPlan().getPlanId() == id;
+            if ((currentPlan || scheduledPlan) && "ACTIVE".equals(subscription.getStatus())) {
                 int customerId = subscription.getCustomer().getCustomerId();
                 subscription.refreshPlanDetails(updated);
-                usageByCustomer.get(customerId).updateDataLimit(updated.getDataLimit());
-                createCurrentInvoice(customerId, updated);
+                if (currentPlan) usageByCustomer.get(customerId).updateDataLimit(updated.getDataLimit());
             }
         }
+        persistState();
         return planJson(updated);
     }
 
     public synchronized void removePlan(int id) throws PlanNotFoundException {
         InternetPlan plan = findPlan(id);
         if (plan == null) throw new PlanNotFoundException("Internet plan #" + id + " was not found.");
-        boolean inUse = subscriptions.stream().anyMatch(s -> s.getPlan().getPlanId() == id && "ACTIVE".equals(s.getStatus()));
+        boolean inUse = subscriptions.stream().anyMatch(s -> "ACTIVE".equals(s.getStatus()) &&
+                (s.getPlan().getPlanId() == id || (s.getPendingPlan() != null && s.getPendingPlan().getPlanId() == id)));
         if (inUse) throw new IllegalArgumentException("Switch active customers to another plan before removing this one.");
         plans.remove(plan);
+        persistState();
     }
 
     public synchronized Map<String, Object> subscribe(int customerId, int planId)
@@ -155,12 +322,27 @@ public class IspService {
         if (active == null) {
             active = new Subscription("SUB-" + String.format("%03d", nextSubscriptionId++), customer, plan, LocalDate.now(), 30);
             subscriptions.add(active);
+            usageByCustomer.computeIfAbsent(customerId, ignored -> new Usage(plan.getDataLimit()))
+                    .updateDataLimit(plan.getDataLimit());
+            createInvoice(customerId, plan, YearMonth.now());
         } else {
-            active.changePlan(plan);
+            if (active.getPlan().getPlanId() == planId) {
+                active.cancelScheduledPlanChange();
+            } else {
+                LocalDate effectiveDate = YearMonth.now().plusMonths(1).atDay(1);
+                active.schedulePlanChange(plan, effectiveDate);
+            }
         }
-        usageByCustomer.computeIfAbsent(customerId, ignored -> new Usage(plan.getDataLimit()))
-                .updateDataLimit(plan.getDataLimit());
-        createCurrentInvoice(customerId, plan);
+        persistState();
+        return subscriptionJson(active);
+    }
+
+    public synchronized Map<String, Object> cancelScheduledPlanChange(int customerId) throws CustomerNotFoundException {
+        if (!customerIndex.containsKey(customerId)) throw new CustomerNotFoundException("Customer #" + customerId + " was not found.");
+        Subscription active = activeSubscription(customerId);
+        if (active == null) throw new IllegalArgumentException("Customer has no active subscription.");
+        active.cancelScheduledPlanChange();
+        persistState();
         return subscriptionJson(active);
     }
 
@@ -171,6 +353,7 @@ public class IspService {
         if (usage == null) throw new InvalidUsageException("This account has no active usage allowance.");
         if (activeSubscription(customerId) == null) throw new InvalidUsageException("Choose an internet plan before recording data usage.");
         usage.addUsage(gb);
+        persistState();
         return usageJson(usage);
     }
 
@@ -184,19 +367,24 @@ public class IspService {
         String id = "CMP" + nextComplaintNumber++;
         Complaint complaint = new Complaint(id, customer, type, description);
         complaintManager.addComplaint(complaint);
+        persistState();
         return complaintJson(complaint);
     }
 
     public synchronized Map<String, Object> updateComplaint(String id, String status)
             throws InvalidComplaintException {
         complaintManager.updateStatus(id, status);
+        persistState();
         return complaintJson(complaintManager.findComplaint(id));
     }
 
     public synchronized Map<String, Object> markInvoicePaid(String id) {
         for (Invoice invoice : invoices) {
             if (invoice.getId().equalsIgnoreCase(id)) {
-                invoice.markPaid();
+                PaymentRecord payment = new PaymentRecord("PAY-" + LocalDate.now().getYear() + "-" + nextPaymentNumber++,
+                        invoice.getTotal(), LocalDate.now(), "SIMULATED");
+                invoice.markPaid(payment);
+                persistState();
                 return invoiceJson(invoice);
             }
         }
@@ -214,10 +402,22 @@ public class IspService {
                     .append(sub == null ? "No active plan" : sub.getPlan().getPlanName()).append('\n');
         }
         report.append("\nBILLING\n");
-        for (Invoice invoice : invoices) report.append(invoice.getId()).append(" | Customer #")
-                .append(invoice.getCustomerId()).append(" | ").append(invoice.getMonth())
-                .append(" | ₹").append(String.format("%.2f", invoice.getTotal()))
-                .append(" | ").append(invoice.getStatus()).append('\n');
+        for (Invoice invoice : invoices) {
+            report.append(invoice.getId()).append(" | Customer #").append(invoice.getCustomerId())
+                    .append(" ").append(invoice.getCustomerName()).append(" | ").append(invoice.getMonth())
+                    .append(" | ").append(invoice.getPlanName()).append(" | Plan ₹")
+                    .append(String.format("%.2f", invoice.getPlanPrice())).append(" | Tax ")
+                    .append(String.format("%.0f%%", invoice.getTaxRate() * 100)).append(" ₹")
+                    .append(String.format("%.2f", invoice.getTax())).append(" | Total ₹")
+                    .append(String.format("%.2f", invoice.getTotal())).append(" | Due ")
+                    .append(invoice.getDueDate()).append(" | ").append(invoice.getStatus()).append('\n');
+            for (PaymentRecord payment : invoice.getPaymentHistory()) {
+                report.append("  Payment ").append(payment.getPaymentId()).append(" | ")
+                        .append(payment.getPaidOn()).append(" | ₹")
+                        .append(String.format("%.2f", payment.getAmount())).append(" | ")
+                        .append(payment.getMethod()).append('\n');
+            }
+        }
         report.append("\nSUPPORT TICKETS\n");
         for (Complaint complaint : complaintManager.getComplaints()) report.append(complaint.getComplaintId())
                 .append(" | Customer #").append(complaint.getCustomerId()).append(" | ")
@@ -227,21 +427,40 @@ public class IspService {
 
     public synchronized int getCustomerCount() { return customers.size(); }
 
-    private void createCurrentInvoice(int customerId, InternetPlan plan) {
-        YearMonth now = YearMonth.now();
-        String month = now.format(DateTimeFormatter.ofPattern("MMMM yyyy"));
-        for (int i = 0; i < invoices.size(); i++) {
-            Invoice invoice = invoices.get(i);
-            if (invoice.getCustomerId() == customerId && invoice.getMonth().equals(month) && "UNPAID".equals(invoice.getStatus())) {
-                if (Math.abs(invoice.getAmount() - plan.getPrice()) < 0.001) return;
-                invoices.remove(i);
-                break;
+    private void applyCurrentBillingCycle() {
+        YearMonth currentPeriod = YearMonth.now();
+        LocalDate effectiveDate = currentPeriod.atDay(1);
+        for (Subscription subscription : subscriptions) {
+            if (!"ACTIVE".equals(subscription.getStatus())) continue;
+            int customerId = subscription.getCustomer().getCustomerId();
+            if (subscription.applyScheduledPlanChange(effectiveDate)) {
+                usageByCustomer.get(customerId).updateDataLimit(subscription.getPlan().getDataLimit());
             }
+            createInvoice(customerId, subscription.getPlan(), currentPeriod);
         }
-        int dueDay = Math.min(25, now.lengthOfMonth());
-        String dueDate = now.atDay(dueDay).toString();
-        invoices.add(0, new Invoice("INV-" + now.getYear() + "-" + nextInvoiceNumber++, customerId,
-                month, plan.getPrice(), TAX_RATE, dueDate, "UNPAID"));
+    }
+
+    private void createInvoice(int customerId, InternetPlan plan, YearMonth period) {
+        boolean alreadyIssued = invoices.stream().anyMatch(invoice -> invoice.getCustomerId() == customerId &&
+                invoice.getBillingPeriod().equals(period));
+        if (alreadyIssued) return;
+        LocalDate dueDate = period.atDay(Math.min(25, period.lengthOfMonth()));
+        if (dueDate.isBefore(LocalDate.now())) {
+            YearMonth nextPeriod = period.plusMonths(1);
+            dueDate = nextPeriod.atDay(Math.min(25, nextPeriod.lengthOfMonth()));
+        }
+        String invoiceId;
+        do {
+            invoiceId = "INV-" + period.getYear() + "-" + String.format("%04d", nextInvoiceNumber++);
+        } while (invoiceIdExists(invoiceId));
+        Customer customer = customerIndex.get(customerId);
+        invoices.add(0, new Invoice(invoiceId, customerId, customer == null ? null : customer.getName(), period, plan.getPlanId(), plan.getPlanName(),
+                plan.getPrice(), TAX_RATE, dueDate, "UNPAID", List.of()));
+    }
+
+    private boolean invoiceIdExists(String id) {
+        for (Invoice invoice : invoices) if (invoice.getId().equals(id)) return true;
+        return false;
     }
 
     private Subscription activeSubscription(int customerId) {
@@ -266,8 +485,8 @@ public class IspService {
         if (!List.of("basic", "standard", "premium").contains(tier.toLowerCase())) {
             throw new InvalidPlanException("Choose Basic, Standard, or Premium as the plan type.");
         }
-        if (!(priceValue instanceof Number priceNumber) || !Double.isFinite(priceNumber.doubleValue()) || priceNumber.doubleValue() < 0) {
-            throw new InvalidPlanException("Plan price must be a finite non-negative number.");
+        if (!(priceValue instanceof Number priceNumber) || !Double.isFinite(priceNumber.doubleValue()) || priceNumber.doubleValue() <= 0) {
+            throw new InvalidPlanException("Plan price must be a finite positive number.");
         }
         if (!(dataValue instanceof Number dataNumber) || dataNumber.intValue() <= 0 || dataNumber.doubleValue() != dataNumber.intValue()) {
             throw new InvalidPlanException("Monthly data allowance must be a positive whole number of GB.");
@@ -300,6 +519,9 @@ public class IspService {
         item.put("customerId", subscription.getCustomer().getCustomerId()); item.put("planId", subscription.getPlan().getPlanId());
         item.put("status", subscription.getStatus()); item.put("startDate", subscription.getStartDate().toString());
         item.put("daysRemaining", subscription.getDaysRemaining());
+        item.put("pendingPlanId", subscription.getPendingPlan() == null ? null : subscription.getPendingPlan().getPlanId());
+        item.put("pendingPlanName", subscription.getPendingPlan() == null ? null : subscription.getPendingPlan().getPlanName());
+        item.put("changeEffectiveDate", subscription.getPlanChangeEffectiveDate() == null ? null : subscription.getPlanChangeEffectiveDate().toString());
         return item;
     }
     private Map<String, Object> usageJson(Usage usage) {
@@ -307,9 +529,19 @@ public class IspService {
     }
     private Map<String, Object> invoiceJson(Invoice invoice) {
         Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", invoice.getId()); item.put("customerId", invoice.getCustomerId()); item.put("month", invoice.getMonth());
-        item.put("amount", invoice.getAmount()); item.put("gst", invoice.getTax()); item.put("total", invoice.getTotal());
-        item.put("status", invoice.getStatus()); item.put("dueDate", invoice.getDueDate()); item.put("summary", invoice.getSummary());
+        item.put("id", invoice.getId()); item.put("customerId", invoice.getCustomerId()); item.put("customerName", invoice.getCustomerName()); item.put("month", invoice.getMonth());
+        item.put("billingPeriod", invoice.getPeriodKey()); item.put("planId", invoice.getPlanId()); item.put("planName", invoice.getPlanName());
+        item.put("planPrice", invoice.getPlanPrice()); item.put("amount", invoice.getAmount()); item.put("taxRate", invoice.getTaxRate());
+        item.put("gst", invoice.getTax()); item.put("total", invoice.getTotal());
+        item.put("status", invoice.getStatus()); item.put("paymentStatus", invoice.getPaymentStatus());
+        item.put("dueDate", invoice.getDueDate()); item.put("summary", invoice.getSummary());
+        item.put("payments", invoice.getPaymentHistory().stream().map(this::paymentJson).toList());
+        return item;
+    }
+    private Map<String, Object> paymentJson(PaymentRecord payment) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("paymentId", payment.getPaymentId()); item.put("amount", payment.getAmount());
+        item.put("paidOn", payment.getPaidOn().toString()); item.put("method", payment.getMethod());
         return item;
     }
     private Map<String, Object> complaintJson(Complaint complaint) {

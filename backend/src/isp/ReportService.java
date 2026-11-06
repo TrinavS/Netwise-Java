@@ -1,5 +1,7 @@
 package isp;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,6 +12,7 @@ import java.util.concurrent.Future;
 /** Background reports run on a bounded thread pool and publish progress to waiting readers. */
 public class ReportService implements AutoCloseable {
     private final IspService service;
+    private final ReportFileStore reportFiles = new ReportFileStore();
     private final ExecutorService pool = Executors.newFixedThreadPool(2);
     private final Map<String, ReportJob> jobs = new ConcurrentHashMap<>();
 
@@ -26,6 +29,8 @@ public class ReportService implements AutoCloseable {
                 job.update("RUNNING", 55, "Summarizing billing and support tickets.", null);
                 Thread.sleep(350);
                 String report = service.buildReport();
+                try { reportFiles.writeReport(id, report); }
+                catch (IOException exception) { throw new UncheckedIOException("Could not write report file.", exception); }
                 job.update("COMPLETED", 100, "Report is ready to download.", report);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -49,6 +54,10 @@ public class ReportService implements AutoCloseable {
         if (job == null) throw new IllegalArgumentException("Report job was not found.");
         job.cancel();
         return job.snapshot();
+    }
+
+    public String readReportFile(String id) throws IOException {
+        return reportFiles.readReport(id);
     }
 
     @Override public void close() { pool.shutdownNow(); }

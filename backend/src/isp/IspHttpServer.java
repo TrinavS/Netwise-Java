@@ -21,6 +21,7 @@ public class IspHttpServer implements AutoCloseable {
     private static final Pattern COMPLAINT_PATH = Pattern.compile("^/api/complaints/([^/]+)$");
     private static final Pattern BILL_PATH = Pattern.compile("^/api/bills/([^/]+)/pay$");
     private static final Pattern REPORT_PATH = Pattern.compile("^/api/reports/([^/]+)$");
+    private static final Pattern REPORT_FILE_PATH = Pattern.compile("^/api/reports/([^/]+)/file$");
     private static final Pattern REPORT_CANCEL_PATH = Pattern.compile("^/api/reports/([^/]+)/cancel$");
 
     private final IspService service;
@@ -52,6 +53,9 @@ public class IspHttpServer implements AutoCloseable {
             if ("POST".equals(method) && "/api/customers".equals(path)) {
                 json(exchange, 201, service.addCustomer(body(exchange))); return;
             }
+            if ("GET".equals(method) && "/api/customers".equals(path)) {
+                json(exchange, 200, service.findCustomer(query(exchange.getRequestURI().getRawQuery()).get("email"))); return;
+            }
             if ("POST".equals(method) && "/api/plans".equals(path)) {
                 json(exchange, 201, service.addPlan(body(exchange))); return;
             }
@@ -63,6 +67,9 @@ public class IspHttpServer implements AutoCloseable {
                 service.removePlan(Integer.parseInt(plan.group(1))); json(exchange, 200, Map.of("ok", true)); return;
             }
             Matcher customer = Pattern.compile("^/api/customers/(\\d+)$").matcher(path);
+            if ("GET".equals(method) && customer.matches()) {
+                json(exchange, 200, service.findCustomer(Integer.parseInt(customer.group(1)))); return;
+            }
             if ("PUT".equals(method) && customer.matches()) {
                 json(exchange, 200, service.updateCustomer(Integer.parseInt(customer.group(1)), body(exchange))); return;
             }
@@ -72,6 +79,9 @@ public class IspHttpServer implements AutoCloseable {
             if ("POST".equals(method) && "/api/subscriptions".equals(path)) {
                 Map<String, Object> body = body(exchange);
                 json(exchange, 201, service.subscribe(integer(body, "customerId"), integer(body, "planId"))); return;
+            }
+            if ("POST".equals(method) && "/api/subscriptions/cancel-change".equals(path)) {
+                json(exchange, 200, service.cancelScheduledPlanChange(integer(body(exchange), "customerId"))); return;
             }
             Matcher usage = USAGE_PATH.matcher(path);
             if ("POST".equals(method) && usage.matches()) {
@@ -89,6 +99,12 @@ public class IspHttpServer implements AutoCloseable {
                 json(exchange, 200, service.markInvoicePaid(decode(bill.group(1)))); return;
             }
             if ("POST".equals(method) && "/api/reports".equals(path)) { json(exchange, 202, reports.start()); return; }
+            Matcher reportFile = REPORT_FILE_PATH.matcher(path);
+            if ("GET".equals(method) && reportFile.matches()) {
+                String reportId = decode(reportFile.group(1));
+                exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"admin-report-" + reportId + ".txt\"");
+                plain(exchange, 200, reports.readReportFile(reportId)); return;
+            }
             Matcher cancel = REPORT_CANCEL_PATH.matcher(path);
             if ("POST".equals(method) && cancel.matches()) { json(exchange, 200, reports.cancel(decode(cancel.group(1)))); return; }
             Matcher report = REPORT_PATH.matcher(path);
@@ -100,7 +116,8 @@ public class IspHttpServer implements AutoCloseable {
             }
             json(exchange, 404, Map.of("error", "API route not found."));
         } catch (CustomerNotFoundException | PlanNotFoundException | InvalidUsageException |
-                 InvalidComplaintException | InvalidCustomerException | InvalidPlanException | IllegalArgumentException exception) {
+                 InvalidComplaintException | InvalidCustomerException | InvalidPlanException |
+                 IllegalArgumentException | IllegalStateException exception) {
             json(exchange, 400, Map.of("error", message(exception)));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -163,6 +180,11 @@ public class IspHttpServer implements AutoCloseable {
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         send(exchange, status, Json.stringify(value));
+    }
+    private static void plain(HttpExchange exchange, int status, String value) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        send(exchange, status, value);
     }
     private static void send(HttpExchange exchange, int status, String value) throws IOException {
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);

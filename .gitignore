@@ -1,6 +1,10 @@
 # Java compiled output
 backend/out/
+target/
+backend/exports/
 *.class
+.env
+.env.*
 
 # IDE settings
 .vscode/

@@ -81,14 +81,17 @@ function updateDonut() {
   const val = document.getElementById("donut-percent"); if (val) val.textContent = `${Math.round(percent)}%`;
 }
 function renderDashboard() {
-  const c = customer(), p = currentPlan(), u = currentUsage(), b = getBills(c.id).find(x => x.status === "UNPAID");
+  const c = customer(), p = currentPlan(), u = currentUsage();
+  const b = getBills(c.id).find(x => ["UNPAID", "OVERDUE"].includes(x.status));
+  const activeSubscription = subscriptionFor(c.id);
+  const pendingPlan = activeSubscription?.pendingPlanId ? planById(activeSubscription.pendingPlanId) : null;
   const remaining = p ? Math.max(0, p.data - u.used) : 0, percent = p ? Math.min(100, u.used / p.data * 100) : 0;
   const activeComplaints = getComplaints(c.id).filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length;
   const actions = role === "admin" ? `<button class="button button-quiet" data-action="export">Generate report</button><button class="button button-primary" data-action="add-customer">+ Add customer</button>` : `<button class="button button-quiet" data-page="plans">Browse plans</button><button class="button button-primary" data-action="raise-complaint">+ Raise complaint</button>`;
   let html = pageHeading(role === "admin" ? "ADMIN OVERVIEW" : "YOUR ACCOUNT", role === "admin" ? "ISP overview" : `Good day, ${esc(c.name.split(" ")[0])} 👋`, role === "admin" ? "Manage customers, plans, billing, and support activity." : "Here’s what’s happening with your internet connection today.", actions);
   if (role === "admin" && reportStatus) html += `<section class="panel report-job"><div class="report-job-head"><div><strong>Admin report</strong><p>${esc(reportStatus.message || "Generating report…")}</p></div>${statusBadge(reportStatus.status)}${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<button class="button button-danger button-small" data-action="cancel-report">Cancel</button>` : ""}</div>${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<div class="progress"><span style="width:${Number(reportStatus.progress) || 0}%"></span></div>` : ""}</section>`;
   if (role === "admin") {
-    html += `<div class="grid stats-grid">${stat("Total customers", state.customers.length, "Registered accounts", "♙")}${stat("Active subscriptions", state.subscriptions.filter(s => s.status === "ACTIVE").length, "Across all customers", "◈")}${stat("Outstanding bills", money(state.bills.filter(x => x.status === "UNPAID").reduce((a, x) => a + x.total, 0)), "Awaiting payment", "▤")}${stat("Open complaints", state.complaints.filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length, "Need attention", "◎")}</div>`;
+    html += `<div class="grid stats-grid">${stat("Total customers", state.customers.length, "Registered accounts", "♙")}${stat("Active subscriptions", state.subscriptions.filter(s => s.status === "ACTIVE").length, "Across all customers", "◈")}${stat("Outstanding bills", money(state.bills.filter(x => ["UNPAID", "OVERDUE"].includes(x.status)).reduce((a, x) => a + x.total, 0)), "Unpaid or overdue", "▤")}${stat("Open complaints", state.complaints.filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length, "Need attention", "◎")}</div>`;
     const matching = state.customers.filter(x => `${x.name} ${x.email} ${x.phone} ${x.id}`.toLowerCase().includes(customerSearch.toLowerCase()));
     const customerRows = matching.map(cu => {
       const s = subscriptionFor(cu.id), pl = s && planById(s.planId);
@@ -104,17 +107,18 @@ function renderDashboard() {
   }
   html += `<div class="grid stats-grid">${stat("Current plan", p ? esc(p.name) : "No plan", p ? `${p.data} GB data allowance` : "Choose a plan to get started", "◈")}${stat("Data remaining", `${remaining.toFixed(1)} <span class="unit">GB</span>`, `<span class="positive">${percent.toFixed(0)}% used</span> this billing cycle`, "◔")}${stat("Next bill", b ? money(b.total) : money(0), b ? `Due ${formatDate(b.dueDate)}` : "No pending payment", "▤")}${stat("Open tickets", activeComplaints, activeComplaints ? "Support team is tracking them" : "No unresolved complaints", "◎")}</div>`;
   html += `<div class="grid dashboard-grid"><section class="panel">${panelTitle("Data usage", "Your current billing cycle", `<button class="link-button" data-page="usage">View details →</button>`)}<div class="usage-summary"><div class="donut"><div class="donut-content"><strong id="donut-percent">${Math.round(percent)}%</strong><small>data used</small></div></div><div class="usage-details"><div class="usage-number"><span>Used</span><strong>${u.used.toFixed(1)} GB</strong></div><div class="progress"><span style="width:${percent}%"></span></div><div class="usage-number usage-gap"><span>Available</span><strong>${remaining.toFixed(1)} GB</strong></div><div class="progress green"><span style="width:${p ? remaining / p.data * 100 : 0}%"></span></div><div class="legend"><span><i></i> Data used</span><span><i class="light"></i> Available</span></div></div></div></section>`;
-  html += `<section class="panel plan-highlight"><p class="eyebrow">YOUR SUBSCRIPTION</p><h2>${p ? esc(p.name) : "No active plan"}</h2><p class="plan-subtitle">${p ? esc(p.description) : "Pick a plan to get connected."}</p><div class="plan-price">${p ? money(p.price) : "—"}<small> / month</small></div><div class="plan-features">${p ? `<span class="plan-feature">↗ ${esc(p.speed)}</span><span class="plan-feature">◔ ${p.data} GB</span>` : ""}<span class="plan-feature">✓ ${p ? "Active" : "Not subscribed"}</span></div><button class="button" data-page="plans">${p ? "Manage plan →" : "Explore plans →"}</button></section></div>`;
+  html += `<section class="panel plan-highlight"><p class="eyebrow">YOUR SUBSCRIPTION</p><h2>${p ? esc(p.name) : "No active plan"}</h2><p class="plan-subtitle">${p ? esc(p.description) : "Pick a plan to get connected."}</p>${pendingPlan ? `<p class="plan-change-notice">${esc(pendingPlan.name)} is scheduled to start ${formatDate(activeSubscription.changeEffectiveDate, { day: "numeric", month: "short", year: "numeric" })}. Your current invoice will remain unchanged.</p>` : ""}<div class="plan-price">${p ? money(p.price) : "—"}<small> / month</small></div><div class="plan-features">${p ? `<span class="plan-feature">↗ ${esc(p.speed)}</span><span class="plan-feature">◔ ${p.data} GB</span>` : ""}<span class="plan-feature">✓ ${p ? "Active" : "Not subscribed"}</span></div><button class="button" data-page="plans">${p ? "Manage plan →" : "Explore plans →"}</button></section></div>`;
   const recent = getBills(c.id).slice().sort((a, b) => b.id.localeCompare(a.id)).slice(0, 3);
   html += `<section class="panel table-panel">${panelTitle("Recent invoices", "Your latest billing activity", `<button class="link-button" data-page="billing">View all invoices →</button>`)}${table(["Invoice", "Billing period", "Amount", "Due date", "Status"], recent.map(x => `<tr><td><strong>${esc(x.id)}</strong></td><td>${esc(x.month)}</td><td><strong>${money(x.total)}</strong></td><td>${formatDate(x.dueDate, { day: "numeric", month: "short", year: "numeric" })}</td><td>${statusBadge(x.status)}</td></tr>`).join(""))}</section>`;
   return html;
 }
 function renderPlans() {
-  const active = currentPlan();
+  const active = currentPlan(), activeSubscription = subscriptionFor(activeCustomerId);
+  const pendingPlanId = activeSubscription?.pendingPlanId ? Number(activeSubscription.pendingPlanId) : null;
   const headingAction = role === "admin" ? `<button class="button button-primary" data-action="add-plan">+ Add internet plan</button>` : "";
   let html = pageHeading(role === "admin" ? "ADMIN · CATALOG" : "CONNECTIVITY", "Plans built for your home", role === "admin" ? "Create and maintain the available ISP packages." : "Choose a package that fits how you work, stream, and play.", headingAction);
-  html += `<div class="grid section-grid">${state.plans.map(p => `<article class="plan-card ${p.featured ? "featured" : ""}">${p.featured ? `<span class="featured-label">MOST POPULAR</span>` : ""}<div class="plan-symbol">${p.tier === "Premium" ? "✦" : p.tier === "Basic" ? "⌂" : "◈"}</div><h3>${esc(p.name)}</h3><p class="muted">${esc(p.description)}</p><div class="big-price">${money(p.price)}<small> / month</small></div><p class="muted">Billed monthly · 18% GST applies</p><ul><li>${esc(p.speed)} download speed</li><li>${p.data} GB monthly data</li><li>24/7 customer support</li><li>Secure home connection</li></ul>${role === "admin" ? `<div class="row-actions"><button class="button button-quiet" data-action="edit-plan" data-plan="${p.id}">Edit plan</button><button class="button button-danger" data-action="remove-plan" data-plan="${p.id}">Remove</button></div>` : active && active.id === p.id ? `<button class="button button-quiet" disabled>✓ Current plan</button>` : `<button class="button ${p.featured ? "button-primary" : "button-quiet"}" data-action="subscribe" data-plan="${p.id}">${active ? "Switch to this plan" : "Choose this plan"}</button>`}</article>`).join("")}</div>`;
-  if (active) html += `<p class="subtitle section-note">Your current subscription is <strong>${esc(active.name)}</strong>. Switching plans updates the backend subscription and invoice.</p>`;
+  html += `<div class="grid section-grid">${state.plans.map(p => `<article class="plan-card ${p.featured ? "featured" : ""}">${p.featured ? `<span class="featured-label">MOST POPULAR</span>` : ""}<div class="plan-symbol">${p.tier === "Premium" ? "✦" : p.tier === "Basic" ? "⌂" : "◈"}</div><h3>${esc(p.name)}</h3><p class="muted">${esc(p.description)}</p><div class="big-price">${money(p.price)}<small> / month</small></div><p class="muted">Billed monthly · 18% GST applies</p><ul><li>${esc(p.speed)} download speed</li><li>${p.data} GB monthly data</li><li>24/7 customer support</li><li>Secure home connection</li></ul>${role === "admin" ? `<div class="row-actions"><button class="button button-quiet" data-action="edit-plan" data-plan="${p.id}">Edit plan</button><button class="button button-danger" data-action="remove-plan" data-plan="${p.id}">Remove</button></div>` : pendingPlanId === p.id ? `<button class="button button-quiet" disabled>Scheduled for next cycle</button>` : active && active.id === p.id ? pendingPlanId ? `<button class="button button-quiet" data-action="cancel-plan-change">Keep current plan</button>` : `<button class="button button-quiet" disabled>✓ Current plan</button>` : `<button class="button ${p.featured ? "button-primary" : "button-quiet"}" data-action="subscribe" data-plan="${p.id}">${active ? pendingPlanId ? "Change scheduled plan" : "Switch next cycle" : "Choose this plan"}</button>`}</article>`).join("")}</div>`;
+  if (active) html += `<p class="subtitle section-note">Your current plan stays active through this billing period. A plan change takes effect on the first day of the next billing period. No partial-month charge is calculated.</p>`;
   return html;
 }
 function renderUsage() {
@@ -130,12 +134,22 @@ function renderUsage() {
   return html;
 }
 function renderBilling() {
-  const bills = getBills(), outstanding = bills.filter(b => b.status === "UNPAID").reduce((a, b) => a + b.total, 0);
-  let html = pageHeading("BILLING CENTRE", "Bills & payments", "Review invoices and keep the account up to date.", `<button class="button button-quiet" data-action="download-bills">Download statement ↓</button>`);
-  html += `<div class="bill-summary"><div class="bill-amount-card"><p>OUTSTANDING BALANCE</p><strong>${money(outstanding)}</strong><small>${bills.filter(b => b.status === "UNPAID").length} unpaid invoice(s)</small></div><section class="panel bill-details"><div class="panel-heading"><div><h2>Current invoice</h2><p>Monthly internet subscription</p></div>${bills.some(b => b.status === "UNPAID") ? statusBadge("UNPAID") : statusBadge("PAID")}</div>${(() => { const b = bills.find(x => x.status === "UNPAID") || bills[0]; return b ? `<div class="bill-line"><span>Plan charge</span><strong>${money(b.amount)}</strong></div><div class="bill-line"><span>Tax (18%)</span><strong>${money(b.gst)}</strong></div><div class="bill-line"><span>Invoice</span><strong>${esc(b.id)}</strong></div><div class="bill-line total"><span>Total due</span><strong>${money(b.total)}</strong></div>` : `<div class="empty-state">No invoices yet.</div>`; })()}</section></div>`;
-  const rows = bills.map(b => `<tr><td><strong>${esc(b.id)}</strong></td><td>${esc(b.month)}</td><td>${money(b.amount)}</td><td>${money(b.gst)}</td><td><strong>${money(b.total)}</strong></td><td>${formatDate(b.dueDate)}</td><td>${statusBadge(b.status)}</td><td>${b.status === "UNPAID" ? `<button class="button button-primary button-small" data-action="pay" data-bill="${esc(b.id)}">Mark paid</button>` : `<button class="button button-quiet button-small" data-action="invoice" data-bill="${esc(b.id)}">Receipt</button>`}</td></tr>`).join("");
-  html += `<section class="panel table-panel">${panelTitle("Invoice history", role === "admin" ? "All customer invoices" : "Invoices associated with your account")}${table(["Invoice", "Period", "Plan charge", "Tax", "Total", "Due date", "Status", "Action"], rows)}</section>`;
-  html += `<p class="subtitle section-note">“Mark paid” updates the project invoice only; it does not process an actual payment.</p>`;
+  const bills = getBills();
+  const openBills = bills.filter(b => ["UNPAID", "OVERDUE"].includes(b.status));
+  const outstanding = openBills.reduce((a, b) => a + b.total, 0);
+  const current = openBills[0] || bills[0];
+  let html = pageHeading("BILLING CENTRE", "Bills & payments", "Issued invoices are preserved with their original plan and tax details.", `<button class="button button-quiet" data-action="download-bills">Download statement ↓</button>`);
+  html += `<div class="bill-summary"><div class="bill-amount-card"><p>OUTSTANDING BALANCE</p><strong>${money(outstanding)}</strong><small>${openBills.length} unpaid or overdue invoice(s)</small></div><section class="panel bill-details"><div class="panel-heading"><div><h2>Current invoice</h2><p>${current ? esc(current.month) : "No issued invoice"}</p></div>${current ? statusBadge(current.status) : ""}</div>${current ? `<div class="bill-line"><span>${esc(current.planName || "Plan charge")}</span><strong>${money(current.planPrice ?? current.amount)}</strong></div><div class="bill-line"><span>Tax (${((current.taxRate ?? 0.18) * 100).toFixed(0)}%)</span><strong>${money(current.gst)}</strong></div><div class="bill-line"><span>Invoice</span><strong>${esc(current.id)}</strong></div><div class="bill-line"><span>Due date</span><strong>${formatDate(current.dueDate, { day: "numeric", month: "short", year: "numeric" })}</strong></div><div class="bill-line total"><span>Total due</span><strong>${money(current.total)}</strong></div>` : `<div class="empty-state">No invoices yet.</div>`}</section></div>`;
+  const rows = bills.map(b => {
+    const payments = (b.payments || []).map(payment => `<div class="payment-entry"><strong>${esc(payment.paymentId)}</strong><br>${formatDate(payment.paidOn, { day: "numeric", month: "short", year: "numeric" })} · ${money(payment.amount)} · ${esc(payment.method)}</div>`).join("") || `<span class="payment-empty">No payments recorded</span>`;
+    const action = ["UNPAID", "OVERDUE"].includes(b.status)
+      ? `<button class="button button-primary button-small" data-action="pay" data-bill="${esc(b.id)}">Simulate payment</button>`
+      : `<button class="button button-quiet button-small" data-action="invoice" data-bill="${esc(b.id)}">Receipt</button>`;
+    return `<tr><td><strong>${esc(b.id)}</strong></td>${role === "admin" ? `<td>${esc(b.customerName || `Customer #${b.customerId}`)}<small class="cell-sub">#${b.customerId}</small></td>` : ""}<td>${esc(b.month)}</td><td>${esc(b.planName || "Internet service")}<small class="cell-sub">Plan #${esc(b.planId ?? "—")}</small></td><td>${money(b.planPrice ?? b.amount)}</td><td>${money(b.gst)}<small class="cell-sub">${((b.taxRate ?? 0.18) * 100).toFixed(0)}% tax</small></td><td><strong>${money(b.total)}</strong></td><td>${formatDate(b.dueDate)}</td><td>${statusBadge(b.status)}</td><td>${payments}</td><td>${action}</td></tr>`;
+  }).join("");
+  const headers = role === "admin" ? ["Invoice", "Customer", "Billing period", "Plan", "Plan price", "Tax", "Total", "Due date", "Status", "Payment history", "Action"] : ["Invoice", "Billing period", "Plan", "Plan price", "Tax", "Total", "Due date", "Status", "Payment history", "Action"];
+  html += `<section class="panel table-panel">${panelTitle("Invoice history", role === "admin" ? "All customer invoices and payment records" : "Invoices and payment records for your account")}${table(headers, rows)}</section>`;
+  html += `<p class="subtitle section-note">Plan switches take effect next billing period; issued invoices are never recalculated. “Simulate payment” records a project payment only and does not contact a payment gateway.</p>`;
   return html;
 }
 function renderComplaints() {
@@ -197,7 +211,7 @@ function customizePortal() {
   });
 }
 function addPlan(existing = null) {
-  const body = `<div class="form-grid"><div class="form-field"><label for="plan-name">Plan name</label><input id="plan-name" name="name" required maxlength="50" value="${esc(existing?.name || "")}"></div><div class="form-field"><label for="plan-tier">Plan type</label><select id="plan-tier" name="tier"><option ${existing?.tier === "Basic" ? "selected" : ""}>Basic</option><option ${!existing || existing.tier === "Standard" ? "selected" : ""}>Standard</option><option ${existing?.tier === "Premium" ? "selected" : ""}>Premium</option></select></div><div class="form-field"><label for="plan-price">Monthly price (₹)</label><input id="plan-price" name="price" type="number" min="0" step="0.01" required value="${existing?.price ?? ""}"></div><div class="form-field"><label for="plan-data">Data allowance (GB)</label><input id="plan-data" name="data" type="number" min="1" step="1" required value="${existing?.data ?? ""}"></div><div class="form-field"><label for="plan-speed">Speed</label><input id="plan-speed" name="speed" required placeholder="e.g. 100 Mbps" value="${esc(existing?.speed || "")}"></div><div class="form-field"><label class="checkbox-field"><input name="featured" type="checkbox" ${existing?.featured ? "checked" : ""}> Featured plan</label></div><div class="form-field full"><label for="plan-description">Description</label><input id="plan-description" name="description" required value="${esc(existing?.description || "")}"></div></div>`;
+  const body = `<div class="form-grid"><div class="form-field"><label for="plan-name">Plan name</label><input id="plan-name" name="name" required maxlength="50" value="${esc(existing?.name || "")}"></div><div class="form-field"><label for="plan-tier">Plan type</label><select id="plan-tier" name="tier"><option ${existing?.tier === "Basic" ? "selected" : ""}>Basic</option><option ${!existing || existing.tier === "Standard" ? "selected" : ""}>Standard</option><option ${existing?.tier === "Premium" ? "selected" : ""}>Premium</option></select></div><div class="form-field"><label for="plan-price">Monthly price (₹)</label><input id="plan-price" name="price" type="number" min="0.01" step="0.01" required value="${existing?.price ?? ""}"></div><div class="form-field"><label for="plan-data">Data allowance (GB)</label><input id="plan-data" name="data" type="number" min="1" step="1" required value="${existing?.data ?? ""}"></div><div class="form-field"><label for="plan-speed">Speed</label><input id="plan-speed" name="speed" required placeholder="e.g. 100 Mbps" value="${esc(existing?.speed || "")}"></div><div class="form-field"><label class="checkbox-field"><input name="featured" type="checkbox" ${existing?.featured ? "checked" : ""}> Featured plan</label></div><div class="form-field full"><label for="plan-description">Description</label><input id="plan-description" name="description" required value="${esc(existing?.description || "")}"></div></div>`;
   openModal(existing ? "Edit internet plan" : "Add internet plan", "ADMIN · PLAN CATALOG", body, async fd => {
     const payload = { name: String(fd.get("name")).trim(), tier: String(fd.get("tier")), price: Number(fd.get("price")), data: Number(fd.get("data")), speed: String(fd.get("speed")).trim(), description: String(fd.get("description")).trim(), featured: Boolean(fd.get("featured")) };
     const result = existing ? await api(`/plans/${existing.id}`, "PUT", payload) : await api("/plans", "POST", payload);
@@ -211,19 +225,28 @@ async function removePlan(id) {
 }
 function subscribe(planId) {
   const p = planById(planId); if (!p) return;
-  const body = `<p class="subtitle modal-copy">You selected <strong>${esc(p.name)}</strong> at <strong>${money(p.price)}/month</strong> before tax.</p><div class="bill-line"><span>Monthly plan fee</span><strong>${money(p.price)}</strong></div><div class="bill-line"><span>GST (18%)</span><strong>${money(p.price * taxRate())}</strong></div><div class="bill-line total"><span>Monthly total</span><strong>${money(p.price * (1 + taxRate()))}</strong></div><p class="subtitle modal-copy">This updates the selected customer’s backend subscription and creates an invoice.</p>`;
+  const existing = subscriptionFor(activeCustomerId);
+  const timing = existing
+    ? "The change is scheduled for the first day of the next billing period. Your current plan and all issued invoices stay unchanged; no partial-month charge is calculated."
+    : "A new subscription is billed at the full monthly plan price for the current billing period. The due date is shown on the issued invoice.";
+  const body = `<p class="subtitle modal-copy">You selected <strong>${esc(p.name)}</strong> at <strong>${money(p.price)}/month</strong> before tax.</p><div class="bill-line"><span>Monthly plan fee</span><strong>${money(p.price)}</strong></div><div class="bill-line"><span>GST (18%)</span><strong>${money(p.price * taxRate())}</strong></div><div class="bill-line total"><span>Monthly total</span><strong>${money(p.price * (1 + taxRate()))}</strong></div><p class="subtitle modal-copy">${timing}</p>`;
   openModal("Confirm plan", "SUBSCRIPTION", body, async () => {
-    await api("/subscriptions", "POST", { customerId: Number(activeCustomerId), planId: p.id });
-    await refreshState(); toast(`${p.name} is now the active plan.`);
+    const result = await api("/subscriptions", "POST", { customerId: Number(activeCustomerId), planId: p.id });
+    await refreshState();
+    toast(result.pendingPlanId ? `${p.name} scheduled for ${formatDate(result.changeEffectiveDate, { day: "numeric", month: "short", year: "numeric" })}.` : `${p.name} is now the active plan.`);
   }, "Confirm plan");
 }
-async function markPaid(id) { await api(`/bills/${encodeURIComponent(id)}/pay`, "POST", {}); await refreshState(); toast(`${id} marked as paid.`); }
+async function cancelScheduledPlanChange() {
+  await api("/subscriptions/cancel-change", "POST", { customerId: Number(activeCustomerId) });
+  await refreshState(); toast("Scheduled plan change cancelled; current plan remains active.");
+}
+async function markPaid(id) { await api(`/bills/${encodeURIComponent(id)}/pay`, "POST", { method: "SIMULATED" }); await refreshState(); toast(`Simulated payment recorded for ${id}.`); }
 function downloadText(filename, content, type = "text/plain") {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function downloadBills() {
-  const lines = [["Invoice", "Customer ID", "Period", "Plan Charge", "GST", "Total", "Due Date", "Status"], ...getBills().map(b => [b.id, b.customerId, b.month, b.amount, b.gst, b.total, b.dueDate, b.status])];
+  const lines = [["Invoice", "Customer ID", "Customer Name", "Billing Period", "Plan", "Plan Price", "Tax Rate", "Tax", "Total", "Due Date", "Status", "Payment History"], ...getBills().map(b => [b.id, b.customerId, b.customerName || "", b.billingPeriod || b.month, b.planName || "Internet service", b.planPrice ?? b.amount, `${((b.taxRate ?? 0.18) * 100).toFixed(0)}%`, b.gst, b.total, b.dueDate, b.status, (b.payments || []).map(p => `${p.paymentId} ${p.paidOn} ${p.amount} ${p.method}`).join("; ")])];
   const csv = lines.map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\r\n");
   downloadText("netwise-invoices.csv", csv, "text/csv;charset=utf-8"); toast("Invoice statement exported.");
 }
@@ -258,13 +281,17 @@ function handleAction(action, el) {
     case "edit-plan": addPlan(planById(el.dataset.plan)); break;
     case "remove-plan": removePlan(el.dataset.plan).catch(e => toast(e.message, true)); break;
     case "subscribe": subscribe(Number(el.dataset.plan)); break;
+    case "cancel-plan-change": cancelScheduledPlanChange().catch(e => toast(e.message, true)); break;
     case "pay": markPaid(el.dataset.bill).catch(e => toast(e.message, true)); break;
     case "download-bills": downloadBills(); break;
     case "export": generateReport().catch(e => toast(e.message, true)); break;
     case "cancel-report": cancelReport().catch(e => toast(e.message, true)); break;
     case "invoice": {
       const b = state.bills.find(x => x.id === el.dataset.bill);
-      if (b) downloadText(`${b.id}-receipt.txt`, `${preferences.brand?.name || "NETWISE"} INTERNET SERVICES\nReceipt: ${b.id}\nPeriod: ${b.month}\nPlan charge: ${money(b.amount)}\nGST: ${money(b.gst)}\nTotal: ${money(b.total)}\nStatus: ${b.status}\nDue date: ${b.dueDate}\n\nDemo receipt; not a tax invoice.`);
+      if (b) {
+        const payments = (b.payments || []).map(p => `${p.paymentId} | ${p.paidOn} | ${money(p.amount)} | ${p.method}`).join("\n") || "No payments recorded";
+        downloadText(`${b.id}-receipt.txt`, `${preferences.brand?.name || "NETWISE"} INTERNET SERVICES\nInvoice: ${b.id}\nCustomer: ${b.customerName || `Customer #${b.customerId}`}\nBilling period: ${b.month}\nPlan: ${b.planName || "Internet service"}\nPlan price: ${money(b.planPrice ?? b.amount)}\nTax rate: ${((b.taxRate ?? 0.18) * 100).toFixed(0)}%\nTax: ${money(b.gst)}\nTotal: ${money(b.total)}\nStatus: ${b.status}\nDue date: ${b.dueDate}\n\nPAYMENT HISTORY\n${payments}\n\nDemo receipt; not a tax invoice.`);
+      }
       toast("Receipt downloaded."); break;
     }
     case "complaint-details": {

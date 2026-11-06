@@ -1,0 +1,27 @@
+{
+  "info": {
+    "name": "Netwise ISP API",
+    "description": "Requests for the Java ISP API. Start the Java backend before sending requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8080" },
+    { "key": "customerId", "value": "101" },
+    { "key": "customerEmail", "value": "rahul@gmail.com" },
+    { "key": "planId", "value": "1" },
+    { "key": "invoiceId", "value": "INV-2026-1042" },
+    { "key": "complaintId", "value": "CMP101" }
+  ],
+  "item": [
+    { "name": "Health", "request": { "method": "GET", "url": "{{baseUrl}}/api/health" } },
+    { "name": "Get full portal state", "request": { "method": "GET", "url": "{{baseUrl}}/api/state" } },
+    { "name": "Find customer by ID (overloaded lookup)", "request": { "method": "GET", "url": "{{baseUrl}}/api/customers/{{customerId}}" } },
+    { "name": "Find customer by email (overloaded lookup)", "request": { "method": "GET", "url": "{{baseUrl}}/api/customers?email={{customerEmail}}" } },
+    { "name": "Create customer", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"name\": \"Alex Morgan\",\n  \"email\": \"alex@example.com\",\n  \"phone\": \"9876543210\",\n  \"address\": \"Bengaluru\"\n}" }, "url": "{{baseUrl}}/api/customers" } },
+    { "name": "Add usage", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"gb\": 5.5\n}" }, "url": "{{baseUrl}}/api/customers/{{customerId}}/usage" } },
+    { "name": "Subscribe or schedule plan change", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"customerId\": 101,\n  \"planId\": 1\n}" }, "url": "{{baseUrl}}/api/subscriptions" } },
+    { "name": "Create complaint", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"customerId\": 101,\n  \"type\": \"Slow Internet\",\n  \"description\": \"Internet speed drops in the evening.\"\n}" }, "url": "{{baseUrl}}/api/complaints" } },
+    { "name": "Update complaint status", "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"status\": \"IN_PROGRESS\"\n}" }, "url": "{{baseUrl}}/api/complaints/{{complaintId}}" } },
+    { "name": "Simulate invoice payment", "request": { "method": "POST", "description": "Marks the invoice paid in this demo; it does not call a payment gateway.", "url": "{{baseUrl}}/api/bills/{{invoiceId}}/pay" } }
+  ]
+}
