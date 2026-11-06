@@ -71,16 +71,36 @@ public class ComplaintManager {
 
     public synchronized void updateStatus(String complaintId, String newStatus)
             throws InvalidComplaintException {
+        updateComplaint(complaintId, newStatus, null, null, "");
+    }
+
+    public synchronized void updateComplaint(String complaintId, String newStatus, String newPriority,
+                                             String assignedTo, String note)
+            throws InvalidComplaintException {
         Complaint complaint = findComplaint(complaintId);
         if (complaint == null) {
             throw new InvalidComplaintException("Complaint not found.");
         }
 
-        if (newStatus == null || Arrays.stream(VALID_STATUSES).noneMatch(s -> s.equalsIgnoreCase(newStatus))) {
+        if (newStatus != null && !newStatus.isBlank()
+                && Arrays.stream(VALID_STATUSES).noneMatch(s -> s.equalsIgnoreCase(newStatus.trim()))) {
             throw new InvalidComplaintException("Invalid complaint status.");
         }
-
-        complaint.setStatus(newStatus.toUpperCase());
+        if (newPriority != null && !newPriority.isBlank()
+                && !List.of("LOW", "NORMAL", "HIGH", "URGENT").contains(newPriority.trim().toUpperCase())) {
+            throw new InvalidComplaintException("Priority must be Low, Normal, High, or Urgent.");
+        }
+        if (assignedTo != null && assignedTo.trim().length() > 80) {
+            throw new InvalidComplaintException("Assignee must be 80 characters or fewer.");
+        }
+        if (note != null && note.trim().length() > 500) {
+            throw new InvalidComplaintException("Support note must be 500 characters or fewer.");
+        }
+        if ((newStatus == null || newStatus.isBlank()) && (newPriority == null || newPriority.isBlank())
+                && assignedTo == null && (note == null || note.isBlank())) {
+            throw new InvalidComplaintException("Provide a status, priority, assignee, or support note to record an update.");
+        }
+        complaint.recordUpdate(newStatus, newPriority, assignedTo, note, "ADMIN");
         System.out.println("Complaint status updated successfully!");
     }
 }

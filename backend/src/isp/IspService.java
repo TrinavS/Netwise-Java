@@ -1,6 +1,7 @@
 package isp;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -24,6 +25,7 @@ public class IspService {
     private final List<Subscription> subscriptions = new ArrayList<>();
     private final Map<Integer, Usage> usageByCustomer = new LinkedHashMap<>();
     private final List<Invoice> invoices = new ArrayList<>();
+    private final List<ServiceNotice> serviceNotices = new ArrayList<>();
     private final ComplaintManager complaintManager = new ComplaintManager();
     private int nextCustomerId = 103;
     private int nextPlanId = 4;
@@ -31,6 +33,7 @@ public class IspService {
     private int nextInvoiceNumber = 1044;
     private int nextPaymentNumber = 1002;
     private int nextComplaintNumber = 103;
+    private int nextNoticeNumber = 1;
 
     public IspService() {
         this(null);
@@ -106,7 +109,8 @@ public class IspService {
             Map<String, Object> row = entry.getValue();
             List<Double> history = new ArrayList<>();
             for (Object item : list(row, "history")) history.add(((Number) item).doubleValue());
-            usageByCustomer.put(entry.getKey(), new Usage(limit, doubleValue(row, "used"), history));
+            usageByCustomer.put(entry.getKey(), new Usage(limit, doubleValue(row, "used"), history,
+                    optionalInt(row, "alertThresholdPercent", 80)));
         }
         for (Object value : list(state, "bills")) {
             Map<String, Object> row = (Map<String, Object>) value;
@@ -129,15 +133,36 @@ public class IspService {
             Map<String, Object> row = (Map<String, Object>) value;
             Customer customer = customerIndex.get(intValue(row, "customerId"));
             if (customer == null) continue;
-            Complaint complaint = new Complaint(text(row, "id"), customer, text(row, "type"), text(row, "description"));
+            String createdAt = optionalText(row, "createdAt");
+            if (createdAt.isBlank()) {
+                String created = optionalText(row, "created");
+                createdAt = (created.isBlank() ? LocalDate.now().toString() : created) + "T09:00:00";
+            }
+            List<ComplaintEvent> events = new ArrayList<>();
+            for (Object eventValue : list(row, "timeline")) {
+                Map<String, Object> event = (Map<String, Object>) eventValue;
+                events.add(new ComplaintEvent(text(event, "action"), text(event, "detail"),
+                        text(event, "actor"), text(event, "timestamp")));
+            }
+            Complaint complaint = new Complaint(text(row, "id"), customer, text(row, "type"),
+                    text(row, "description"), text(row, "status"), optionalText(row, "priority"),
+                    optionalText(row, "assignedTo"), createdAt, events);
             try {
                 complaintManager.addComplaint(complaint);
-                complaintManager.updateStatus(complaint.getComplaintId(), text(row, "status"));
             } catch (InvalidComplaintException exception) {
                 throw new IllegalStateException("Invalid saved complaint: " + exception.getMessage(), exception);
             }
             nextComplaintNumber = Math.max(nextComplaintNumber, parseSuffix(complaint.getComplaintId()) + 1);
         }
+        for (Object value : list(state, "notices")) {
+            Map<String, Object> row = (Map<String, Object>) value;
+            ServiceNotice notice = new ServiceNotice(text(row, "id"), text(row, "title"), text(row, "message"),
+                    text(row, "area"), optionalText(row, "startsAt"), text(row, "status"),
+                    optionalText(row, "createdAt"));
+            serviceNotices.add(notice);
+            nextNoticeNumber = Math.max(nextNoticeNumber, parseSuffix(notice.getId()) + 1);
+        }
+        if (!state.containsKey("notices")) addDemoNotice();
     }
 
     private void persistState() {
@@ -157,6 +182,7 @@ public class IspService {
         root.put("bills", invoices.stream().map(this::invoiceJson).toList());
         root.put("complaints", complaintManager.getComplaints().stream().map(this::complaintJson).toList());
         root.put("complaintTypes", complaintManager.getComplaintTypes());
+        root.put("notices", serviceNotices.stream().map(this::noticeJson).toList());
         return root;
     }
 
@@ -165,6 +191,9 @@ public class IspService {
         return value instanceof List<?> list ? list : List.of();
     }
     private static int intValue(Map<String, Object> object, String key) { return ((Number) object.get(key)).intValue(); }
+    private static int optionalInt(Map<String, Object> object, String key, int fallback) {
+        Object value = object.get(key); return value instanceof Number number ? number.intValue() : fallback;
+    }
     private static double doubleValue(Map<String, Object> object, String key) { return ((Number) object.get(key)).doubleValue(); }
     private static int parseSuffix(String value) {
         int dash = value.lastIndexOf('-');
@@ -202,6 +231,15 @@ public class IspService {
         } catch (InvalidComplaintException impossible) {
             throw new IllegalStateException("Invalid built-in sample data.", impossible);
         }
+        addDemoNotice();
+    }
+
+    private void addDemoNotice() {
+        LocalDateTime startsAt = LocalDate.now().plusDays(7).atTime(1, 0);
+        serviceNotices.add(new ServiceNotice("NTC-" + String.format("%04d", nextNoticeNumber++),
+                "Demo: scheduled network maintenance",
+                "Sample notice for the project demo. Administrators can update its status or publish a project notice.",
+                "All service areas", startsAt.toString(), "SCHEDULED", LocalDateTime.now().withNano(0).toString()));
     }
 
     public synchronized Map<String, Object> snapshot() {
@@ -217,6 +255,7 @@ public class IspService {
         root.put("bills", invoices.stream().map(this::invoiceJson).toList());
         root.put("complaints", complaintManager.getComplaints().stream().map(this::complaintJson).toList());
         root.put("complaintTypes", complaintManager.getComplaintTypes());
+        root.put("notices", serviceNotices.stream().map(this::noticeJson).toList());
         return root;
     }
 
@@ -357,6 +396,16 @@ public class IspService {
         return usageJson(usage);
     }
 
+    public synchronized Map<String, Object> updateUsageAlert(int customerId, int thresholdPercent)
+            throws CustomerNotFoundException {
+        if (!customerIndex.containsKey(customerId)) throw new CustomerNotFoundException("Customer #" + customerId + " was not found.");
+        Usage usage = usageByCustomer.get(customerId);
+        if (usage == null) throw new IllegalArgumentException("This account has no usage settings.");
+        usage.setAlertThresholdPercent(thresholdPercent);
+        persistState();
+        return usageJson(usage);
+    }
+
     public synchronized Map<String, Object> addComplaint(Map<String, Object> input)
             throws CustomerNotFoundException, InvalidComplaintException {
         int customerId = integer(input, "customerId");
@@ -373,9 +422,55 @@ public class IspService {
 
     public synchronized Map<String, Object> updateComplaint(String id, String status)
             throws InvalidComplaintException {
-        complaintManager.updateStatus(id, status);
+        Map<String, Object> update = new LinkedHashMap<>(); update.put("status", status);
+        return updateComplaint(id, update);
+    }
+
+    public synchronized Map<String, Object> updateComplaint(String id, Map<String, Object> input)
+            throws InvalidComplaintException {
+        String status = input.containsKey("status") ? optionalText(input, "status") : null;
+        String priority = input.containsKey("priority") ? optionalText(input, "priority") : null;
+        String assignedTo = input.containsKey("assignedTo") ? optionalText(input, "assignedTo") : null;
+        String note = input.containsKey("note") ? optionalText(input, "note") : null;
+        complaintManager.updateComplaint(id, status, priority, assignedTo, note);
         persistState();
         return complaintJson(complaintManager.findComplaint(id));
+    }
+
+    public synchronized Map<String, Object> addServiceNotice(Map<String, Object> input) {
+        String title = text(input, "title").trim();
+        String message = text(input, "message").trim();
+        String area = text(input, "area").trim();
+        String startsAt = optionalText(input, "startsAt").trim();
+        String status = text(input, "status").trim().toUpperCase();
+        if (title.isEmpty() || title.length() > 90) throw new IllegalArgumentException("Notice title is required and must be 90 characters or fewer.");
+        if (message.length() < 8 || message.length() > 500) throw new IllegalArgumentException("Notice message must be between 8 and 500 characters.");
+        if (area.isEmpty() || area.length() > 100) throw new IllegalArgumentException("Service area is required and must be 100 characters or fewer.");
+        validateNoticeStatus(status);
+        if (!startsAt.isEmpty()) {
+            try { LocalDateTime.parse(startsAt); }
+            catch (RuntimeException exception) { throw new IllegalArgumentException("Scheduled start must be a valid local date and time."); }
+        }
+        String id = "NTC-" + String.format("%04d", nextNoticeNumber++);
+        ServiceNotice notice = new ServiceNotice(id, title, message, area, startsAt, status, LocalDateTime.now().withNano(0).toString());
+        serviceNotices.add(0, notice);
+        persistState();
+        return noticeJson(notice);
+    }
+
+    public synchronized Map<String, Object> updateServiceNotice(String id, String status) {
+        ServiceNotice notice = serviceNotices.stream().filter(n -> n.getId().equalsIgnoreCase(id)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Service notice " + id + " was not found."));
+        validateNoticeStatus(status == null ? "" : status.trim().toUpperCase());
+        notice.setStatus(status.trim().toUpperCase());
+        persistState();
+        return noticeJson(notice);
+    }
+
+    private void validateNoticeStatus(String status) {
+        if (!List.of("SCHEDULED", "ACTIVE", "RESOLVED", "CANCELLED").contains(status)) {
+            throw new IllegalArgumentException("Notice status must be Scheduled, Active, Resolved, or Cancelled.");
+        }
     }
 
     public synchronized Map<String, Object> markInvoicePaid(String id) {
@@ -525,7 +620,10 @@ public class IspService {
         return item;
     }
     private Map<String, Object> usageJson(Usage usage) {
-        Map<String, Object> item = new LinkedHashMap<>(); item.put("used", usage.getDataUsed()); item.put("history", usage.getHistory()); return item;
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("used", usage.getDataUsed()); item.put("history", usage.getHistory());
+        item.put("alertThresholdPercent", usage.getAlertThresholdPercent());
+        return item;
     }
     private Map<String, Object> invoiceJson(Invoice invoice) {
         Map<String, Object> item = new LinkedHashMap<>();
@@ -548,7 +646,23 @@ public class IspService {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", complaint.getComplaintId()); item.put("customerId", Integer.parseInt(complaint.getCustomerId()));
         item.put("type", complaint.getComplaintType()); item.put("description", complaint.getDescription());
-        item.put("status", complaint.getStatus()); item.put("created", LocalDate.now().toString());
+        item.put("status", complaint.getStatus()); item.put("priority", complaint.getPriority());
+        item.put("assignedTo", complaint.getAssignedTo()); item.put("createdAt", complaint.getCreatedAt());
+        item.put("created", complaint.getCreatedAt().substring(0, Math.min(10, complaint.getCreatedAt().length())));
+        item.put("timeline", complaint.getTimeline().stream().map(this::complaintEventJson).toList());
+        return item;
+    }
+    private Map<String, Object> complaintEventJson(ComplaintEvent event) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("action", event.getAction()); item.put("detail", event.getDetail());
+        item.put("actor", event.getActor()); item.put("timestamp", event.getTimestamp());
+        return item;
+    }
+    private Map<String, Object> noticeJson(ServiceNotice notice) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", notice.getId()); item.put("title", notice.getTitle()); item.put("message", notice.getMessage());
+        item.put("area", notice.getArea()); item.put("startsAt", notice.getStartsAt());
+        item.put("status", notice.getStatus()); item.put("createdAt", notice.getCreatedAt());
         return item;
     }
 

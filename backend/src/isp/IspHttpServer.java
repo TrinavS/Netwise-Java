@@ -18,7 +18,9 @@ import java.util.regex.Pattern;
 /** Same-origin HTTP API and static frontend host; no third-party libraries required. */
 public class IspHttpServer implements AutoCloseable {
     private static final Pattern USAGE_PATH = Pattern.compile("^/api/customers/(\\d+)/usage$");
+    private static final Pattern USAGE_ALERT_PATH = Pattern.compile("^/api/customers/(\\d+)/usage-alert$");
     private static final Pattern COMPLAINT_PATH = Pattern.compile("^/api/complaints/([^/]+)$");
+    private static final Pattern NOTICE_PATH = Pattern.compile("^/api/notices/([^/]+)$");
     private static final Pattern BILL_PATH = Pattern.compile("^/api/bills/([^/]+)/pay$");
     private static final Pattern REPORT_PATH = Pattern.compile("^/api/reports/([^/]+)$");
     private static final Pattern REPORT_FILE_PATH = Pattern.compile("^/api/reports/([^/]+)/file$");
@@ -87,12 +89,23 @@ public class IspHttpServer implements AutoCloseable {
             if ("POST".equals(method) && usage.matches()) {
                 json(exchange, 200, service.addUsage(Integer.parseInt(usage.group(1)), number(body(exchange), "gb"))); return;
             }
+            Matcher usageAlert = USAGE_ALERT_PATH.matcher(path);
+            if ("PATCH".equals(method) && usageAlert.matches()) {
+                json(exchange, 200, service.updateUsageAlert(Integer.parseInt(usageAlert.group(1)), integer(body(exchange), "thresholdPercent"))); return;
+            }
             if ("POST".equals(method) && "/api/complaints".equals(path)) {
                 json(exchange, 201, service.addComplaint(body(exchange))); return;
             }
             Matcher complaint = COMPLAINT_PATH.matcher(path);
             if ("PATCH".equals(method) && complaint.matches()) {
-                json(exchange, 200, service.updateComplaint(decode(complaint.group(1)), text(body(exchange), "status"))); return;
+                json(exchange, 200, service.updateComplaint(decode(complaint.group(1)), body(exchange))); return;
+            }
+            if ("POST".equals(method) && "/api/notices".equals(path)) {
+                json(exchange, 201, service.addServiceNotice(body(exchange))); return;
+            }
+            Matcher notice = NOTICE_PATH.matcher(path);
+            if ("PATCH".equals(method) && notice.matches()) {
+                json(exchange, 200, service.updateServiceNotice(decode(notice.group(1)), text(body(exchange), "status"))); return;
             }
             Matcher bill = BILL_PATH.matcher(path);
             if ("POST".equals(method) && bill.matches()) {

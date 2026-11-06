@@ -3,12 +3,15 @@
 const API = "/api";
 const config = window.NETWISE_CONFIG || {};
 let preferences = loadPreferences();
-let state = { customers: [], plans: [], subscriptions: [], usage: {}, bills: [], complaints: [], complaintTypes: [] };
+let state = { customers: [], plans: [], subscriptions: [], usage: {}, bills: [], complaints: [], complaintTypes: [], notices: [] };
 let currentPage = "dashboard";
 let role = "customer";
 let activeCustomerId = null;
 let searchQuery = "";
 let customerSearch = "";
+let billingSearch = "";
+let billingStatusFilter = "ALL";
+let billingSort = "newest";
 let backendConnected = false;
 let reportStatus = null;
 function loadPreferences() {
@@ -38,6 +41,13 @@ function currentPlan(id = activeCustomerId) { const s = subscriptionFor(id); ret
 function currentUsage(id = activeCustomerId) { return state.usage?.[id] || state.usage?.[String(id)] || { used: 0, history: [0, 0, 0, 0] }; }
 function money(n) { return new Intl.NumberFormat(preferences.locale || "en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(Number(n) || 0); }
 function formatDate(value, options = { day: "numeric", month: "short" }) { return value ? new Intl.DateTimeFormat(preferences.locale || "en-IN", options).format(new Date(`${value}T00:00:00`)) : "—"; }
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(preferences.locale || "en-IN", {
+    day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit"
+  }).format(date);
+}
 function initials(name) { return String(name || "N").split(/\s+/).map(x => x[0]).slice(0, 2).join("").toUpperCase(); }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function statusBadge(status) {
@@ -53,6 +63,12 @@ function table(headers, rows, emptyText = "Nothing to show yet.") { return `<div
 function customerOptions(selected = activeCustomerId) { return state.customers.map(c => `<option value="${c.id}" ${c.id === Number(selected) ? "selected" : ""}>${esc(c.name)} · #${c.id}</option>`).join(""); }
 function getBills(id = activeCustomerId) { return state.bills.filter(b => role === "admin" || b.customerId === Number(id)); }
 function getComplaints(id = activeCustomerId) { return state.complaints.filter(c => role === "admin" || c.customerId === Number(id)); }
+function noticeMatchesCustomer(notice, account) {
+  const area = String(notice.area || "").trim().toLowerCase();
+  if (["all", "all areas", "all service areas", "all customers"].includes(area)) return true;
+  const address = String(account?.address || "").toLowerCase();
+  return Boolean(area && address && address.includes(area));
+}
 function render() {
   const root = document.getElementById("page-root"), c = customer();
   document.getElementById("breadcrumb-current").textContent = ({ dashboard: "Dashboard", plans: "Internet plans", usage: "Data usage", billing: "Billing", complaints: "Support & complaints" })[currentPage] || "Dashboard";
@@ -87,9 +103,13 @@ function renderDashboard() {
   const activeSubscription = subscriptionFor(c.id);
   const pendingPlan = activeSubscription?.pendingPlanId ? planById(activeSubscription.pendingPlanId) : null;
   const remaining = p ? Math.max(0, p.data - u.used) : 0, percent = p ? Math.min(100, u.used / p.data * 100) : 0;
+  const alertThreshold = Number(u.alertThresholdPercent ?? 80);
   const activeComplaints = getComplaints(c.id).filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length;
   const actions = role === "admin" ? `<button class="button button-quiet" data-action="export">Generate report</button><button class="button button-primary" data-action="add-customer">+ Add customer</button>` : `<button class="button button-quiet" data-page="plans">Browse plans</button><button class="button button-primary" data-action="raise-complaint">+ Raise complaint</button>`;
   let html = pageHeading(role === "admin" ? "ADMIN OVERVIEW" : "YOUR ACCOUNT", role === "admin" ? "ISP overview" : `Welcome back, ${esc(c.name.split(" ")[0])}`, role === "admin" ? "Manage customers, plans, billing, and support activity." : "Here’s what’s happening with your internet connection today.", actions);
+  if (role === "customer" && p && percent >= alertThreshold) {
+    html += `<section class="alert-banner usage-alert" role="status"><span class="alert-symbol">!</span><div><strong>You’ve reached your ${alertThreshold}% data alert</strong><p>${Number(u.used).toFixed(1)} GB of ${p.data} GB has been used this billing cycle. Review your usage or compare available plans.</p></div><button class="button button-quiet button-small" data-page="usage">Review usage</button></section>`;
+  }
   if (role === "admin" && reportStatus) html += `<section class="panel report-job"><div class="report-job-head"><div><strong>Admin report</strong><p>${esc(reportStatus.message || "Generating report…")}</p></div>${statusBadge(reportStatus.status)}${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<button class="button button-danger button-small" data-action="cancel-report">Cancel</button>` : ""}</div>${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<div class="progress"><span style="width:${Number(reportStatus.progress) || 0}%"></span></div>` : ""}</section>`;
   if (role === "admin") {
     html += `<div class="grid stats-grid">${stat("Total customers", state.customers.length, "Registered accounts", "♙")}${stat("Active subscriptions", state.subscriptions.filter(s => s.status === "ACTIVE").length, "Across all customers", "◈")}${stat("Outstanding bills", money(state.bills.filter(x => ["UNPAID", "OVERDUE"].includes(x.status)).reduce((a, x) => a + x.total, 0)), "Unpaid or overdue", "▤")}${stat("Open complaints", state.complaints.filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length, "Need attention", "◎")}</div>`;
@@ -104,8 +124,12 @@ function renderDashboard() {
       return `<tr><td><strong>${esc(x.id)}</strong></td><td>${esc(cu ? cu.name : "Unknown")}</td><td>${esc(x.type)}</td><td>${statusBadge(x.status)}</td></tr>`;
     }).join("");
     html += `<section class="panel table-panel">${panelTitle("Latest support tickets", "Recent customer complaints", `<button class="link-button" data-page="complaints">View all →</button>`)}${table(["Ticket", "Customer", "Issue", "Status"], latest)}</section>`;
+    const noticeRows = (state.notices || []).map(n => `<tr><td><strong>${esc(n.title)}</strong><small class="cell-sub">${esc(n.message)}</small></td><td>${esc(n.area)}</td><td>${n.startsAt ? formatDateTime(n.startsAt) : "Not scheduled"}</td><td><select class="filter-select" data-action="update-notice" data-notice="${esc(n.id)}"><option ${n.status === "SCHEDULED" ? "selected" : ""}>SCHEDULED</option><option ${n.status === "ACTIVE" ? "selected" : ""}>ACTIVE</option><option ${n.status === "RESOLVED" ? "selected" : ""}>RESOLVED</option><option ${n.status === "CANCELLED" ? "selected" : ""}>CANCELLED</option></select></td></tr>`).join("");
+    html += `<section class="panel table-panel">${panelTitle("Service notices", "Project notices for maintenance or service impact", `<button class="link-button" data-action="add-notice">+ Publish notice</button>`)}${table(["Notice", "Area", "Scheduled start", "Status"], noticeRows, "No service notices have been published.")}</section>`;
     return html;
   }
+  const visibleNotices = (state.notices || []).filter(n => ["SCHEDULED", "ACTIVE"].includes(n.status) && noticeMatchesCustomer(n, c));
+  html += `<section class="notice-section"><div class="notice-section-heading"><div><p class="eyebrow">SERVICE UPDATES</p><h2>Network notices</h2></div><span class="notice-disclaimer">Project simulation</span></div>${visibleNotices.length ? `<div class="notice-grid">${visibleNotices.map(n => `<article class="notice-card notice-${n.status.toLowerCase()}"><div class="notice-card-top">${statusBadge(n.status)}<span>${esc(n.area)}</span></div><h3>${esc(n.title)}</h3><p>${esc(n.message)}</p><small>${n.startsAt ? `${n.status === "SCHEDULED" ? "Scheduled" : "Started"} ${formatDateTime(n.startsAt)}` : `Posted ${formatDateTime(n.createdAt)}`}</small></article>`).join("")}</div>` : `<div class="notice-empty">No active or scheduled service notices.</div>`}</section>`;
   html += `<div class="grid stats-grid">${stat("Current plan", p ? esc(p.name) : "No plan", p ? `${p.data} GB data allowance` : "Choose a plan to get started", "◈")}${stat("Data remaining", `${remaining.toFixed(1)} <span class="unit">GB</span>`, `<span class="positive">${percent.toFixed(0)}% used</span> this billing cycle`, "◔")}${stat("Next bill", b ? money(b.total) : money(0), b ? `Due ${formatDate(b.dueDate)}` : "No pending payment", "▤")}${stat("Open tickets", activeComplaints, activeComplaints ? "Support team is tracking them" : "No unresolved complaints", "◎")}</div>`;
   html += `<div class="grid dashboard-grid"><section class="panel">${panelTitle("Data usage", "Your current billing cycle", `<button class="link-button" data-page="usage">View details →</button>`)}<div class="usage-summary"><div class="donut"><div class="donut-content"><strong id="donut-percent">${Math.round(percent)}%</strong><small>data used</small></div></div><div class="usage-details"><div class="usage-number"><span>Used</span><strong>${u.used.toFixed(1)} GB</strong></div><div class="progress"><span style="width:${percent}%"></span></div><div class="usage-number usage-gap"><span>Available</span><strong>${remaining.toFixed(1)} GB</strong></div><div class="progress green"><span style="width:${p ? remaining / p.data * 100 : 0}%"></span></div><div class="legend"><span><i></i> Data used</span><span><i class="light"></i> Available</span></div></div></div></section>`;
   html += `<section class="panel plan-highlight"><p class="eyebrow">YOUR SUBSCRIPTION</p><h2>${p ? esc(p.name) : "No active plan"}</h2><p class="plan-subtitle">${p ? esc(p.description) : "Pick a plan to get connected."}</p>${pendingPlan ? `<p class="plan-change-notice">${esc(pendingPlan.name)} is scheduled to start ${formatDate(activeSubscription.changeEffectiveDate, { day: "numeric", month: "short", year: "numeric" })}. Your current invoice will remain unchanged.</p>` : ""}<div class="plan-price">${p ? money(p.price) : "—"}<small> / month</small></div><div class="plan-features">${p ? `<span class="plan-feature">↗ ${esc(p.speed)}</span><span class="plan-feature">◔ ${p.data} GB</span>` : ""}<span class="plan-feature">✓ ${p ? "Active" : "Not subscribed"}</span></div><button class="button" data-page="plans">${p ? "Manage plan →" : "Explore plans →"}</button></section></div>`;
@@ -119,28 +143,53 @@ function renderPlans() {
   const headingAction = role === "admin" ? `<button class="button button-primary" data-action="add-plan">+ Add internet plan</button>` : "";
   let html = pageHeading(role === "admin" ? "ADMIN · CATALOG" : "CONNECTIVITY", "Plans built for your home", role === "admin" ? "Create and maintain the available ISP packages." : "Choose a package that fits how you work, stream, and play.", headingAction);
   html += `<div class="grid section-grid">${state.plans.map(p => `<article class="plan-card ${p.featured ? "featured" : ""}">${p.featured ? `<span class="featured-label">MOST POPULAR</span>` : ""}<div class="plan-symbol">${p.tier === "Premium" ? "✦" : p.tier === "Basic" ? "⌂" : "◈"}</div><h3>${esc(p.name)}</h3><p class="muted">${esc(p.description)}</p><div class="big-price">${money(p.price)}<small> / month</small></div><p class="muted">Billed monthly · 18% GST applies</p><ul><li>${esc(p.speed)} download speed</li><li>${p.data} GB monthly data</li><li>24/7 customer support</li><li>Secure home connection</li></ul>${role === "admin" ? `<div class="row-actions"><button class="button button-quiet" data-action="edit-plan" data-plan="${p.id}">Edit plan</button><button class="button button-danger" data-action="remove-plan" data-plan="${p.id}">Remove</button></div>` : pendingPlanId === p.id ? `<button class="button button-quiet" disabled>Scheduled for next cycle</button>` : active && active.id === p.id ? pendingPlanId ? `<button class="button button-quiet" data-action="cancel-plan-change">Keep current plan</button>` : `<button class="button button-quiet" disabled>✓ Current plan</button>` : `<button class="button ${p.featured ? "button-primary" : "button-quiet"}" data-action="subscribe" data-plan="${p.id}">${active ? pendingPlanId ? "Change scheduled plan" : "Switch next cycle" : "Choose this plan"}</button>`}</article>`).join("")}</div>`;
+  const comparisonRows = [
+    ["Monthly price", ...state.plans.map(p => `<strong>${money(p.price)}</strong> / month`)],
+    ["Price incl. 18% GST", ...state.plans.map(p => `<strong>${money(p.price * (1 + taxRate()))}</strong> / month`)],
+    ["Download speed", ...state.plans.map(p => esc(p.speed))],
+    ["Monthly data", ...state.plans.map(p => `${p.data} GB`)],
+    ["Plan tier", ...state.plans.map(p => esc(p.tier))],
+    ["Best for", ...state.plans.map(p => esc(p.description))]
+  ].map(row => `<tr>${row.map((cell, index) => `<td>${index === 0 ? `<strong>${cell}</strong>` : cell}</td>`).join("")}</tr>`).join("");
+  html += `<section class="panel table-panel plan-comparison">${panelTitle("Compare plans", "Review monthly price, speed, data, and the tax-inclusive total in one view")}${table(["Plan detail", ...state.plans.map(p => esc(p.name))], comparisonRows, "Add plans to the catalog to compare them.")}</section>`;
   if (active) html += `<p class="subtitle section-note">Your current plan stays active through this billing period. A plan change takes effect on the first day of the next billing period. No partial-month charge is calculated.</p>`;
   return html;
 }
 function renderUsage() {
   const p = currentPlan(), u = currentUsage(), used = Number(u.used) || 0, limit = p ? p.data : 0;
   const remaining = Math.max(0, limit - used), percent = limit ? Math.min(100, used / limit * 100) : 0;
+  const alertThreshold = Number(u.alertThresholdPercent ?? 80);
   const hist = u.history || [0, 0, 0, 0], monthCount = hist.length, currentMonth = new Date().getMonth();
   const months = hist.map((_, i) => new Intl.DateTimeFormat(preferences.locale || "en-IN", { month: "short" }).format(new Date(new Date().getFullYear(), currentMonth - monthCount + 1 + i, 1)));
   const max = Math.max(1, ...hist.map(Number));
   let html = pageHeading("USAGE MONITOR", "Your data, at a glance", "Track consumption and keep your connection running smoothly.");
   html += `<section class="panel usage-big-card"><div class="usage-overview"><div class="usage-total"><p>DATA USED THIS CYCLE</p><strong>${used.toFixed(1)} <small>GB / ${limit} GB</small></strong><p>${remaining.toFixed(1)} GB remaining in your current plan</p></div><div class="usage-meter"><div class="usage-number"><span>Monthly allowance used</span><strong>${percent.toFixed(0)}%</strong></div><div class="progress"><span style="width:${percent}%"></span></div><p class="subtitle usage-hint">${percent > 85 ? "You are close to your data allowance." : "Your usage is within your monthly allowance."}</p></div></div></section>`;
+  if (p && percent >= alertThreshold) html += `<section class="alert-banner usage-alert" role="status"><span class="alert-symbol">!</span><div><strong>Usage alert threshold reached</strong><p>You’ve used ${used.toFixed(1)} GB (${percent.toFixed(0)}%) of your ${limit} GB allowance. Your alert is set to ${alertThreshold}%.</p></div></section>`;
+  html += `<section class="panel section-note alert-settings">${panelTitle("Usage alert", "Choose when this account should show an in-portal data warning.")}${p ? `<form id="usage-alert-form" class="alert-settings-form"><label class="form-field"><span>Alert me at</span><select name="thresholdPercent">${[50, 60, 70, 80, 90, 100].map(value => `<option value="${value}" ${value === alertThreshold ? "selected" : ""}>${value}% of monthly allowance</option>`).join("")}</select></label><button class="button button-primary" type="submit">Save alert</button></form><p class="alert-settings-note">This is an in-app project alert. It does not send SMS or email.</p>` : `<p class="subtitle">Choose an active internet plan before configuring usage alerts.</p>`}</section>`;
   html += `<section class="panel section-note">${panelTitle("Monthly usage history", "Usage records stored by the Java backend")}<div class="usage-bars">${hist.map((v, i) => `<div class="usage-bar-row"><span class="bar-label">${months[i] || `Month ${i + 1}`}</span><div class="progress"><span style="width:${Number(v) / max * 100}%"></span></div><span class="bar-value">${Number(v).toFixed(1)} GB</span></div>`).join("")}</div></section>`;
   html += `<section class="panel section-note">${panelTitle("Add usage record", p ? "Simulate usage for this customer" : "An active plan is required")}${p ? `<form id="usage-form" class="form-grid"><div class="form-field"><label for="usage-gb">Add usage (GB)</label><input id="usage-gb" name="gb" type="number" min="0.1" step="0.1" required placeholder="e.g. 2.5"></div><div class="form-field form-end"><button class="button button-primary" type="submit">Add usage</button></div></form>` : `<p class="subtitle">Choose an internet plan before adding data usage.</p><button class="button button-quiet" data-page="plans">Browse plans</button>`}</section>`;
   return html;
 }
 function renderBilling() {
-  const bills = getBills();
-  const openBills = bills.filter(b => ["UNPAID", "OVERDUE"].includes(b.status));
+  const allBills = getBills();
+  const openBills = allBills.filter(b => ["UNPAID", "OVERDUE"].includes(b.status));
   const outstanding = openBills.reduce((a, b) => a + b.total, 0);
-  const current = openBills[0] || bills[0];
+  const current = openBills[0] || allBills[0];
+  const query = billingSearch.trim().toLowerCase();
+  const bills = allBills.filter(b => {
+    const matchesStatus = billingStatusFilter === "ALL" || b.status === billingStatusFilter;
+    const searchable = `${b.id} ${b.month} ${b.billingPeriod || ""} ${b.planName || ""} ${b.customerName || ""} ${b.status}`.toLowerCase();
+    return matchesStatus && (!query || searchable.includes(query));
+  }).sort((a, b) => {
+    if (billingSort === "due-asc") return String(a.dueDate || "").localeCompare(String(b.dueDate || ""));
+    if (billingSort === "due-desc") return String(b.dueDate || "").localeCompare(String(a.dueDate || ""));
+    if (billingSort === "amount-desc") return Number(b.total) - Number(a.total);
+    if (billingSort === "amount-asc") return Number(a.total) - Number(b.total);
+    return String(b.billingPeriod || b.month || "").localeCompare(String(a.billingPeriod || a.month || "")) || String(b.id).localeCompare(String(a.id));
+  });
   let html = pageHeading("BILLING CENTRE", "Bills & payments", "Issued invoices are preserved with their original plan and tax details.", `<button class="button button-quiet" data-action="download-bills">Download statement ↓</button>`);
   html += `<div class="bill-summary"><div class="bill-amount-card"><p>OUTSTANDING BALANCE</p><strong>${money(outstanding)}</strong><small>${openBills.length} unpaid or overdue invoice(s)</small></div><section class="panel bill-details"><div class="panel-heading"><div><h2>Current invoice</h2><p>${current ? esc(current.month) : "No issued invoice"}</p></div>${current ? statusBadge(current.status) : ""}</div>${current ? `<div class="bill-line"><span>${esc(current.planName || "Plan charge")}</span><strong>${money(current.planPrice ?? current.amount)}</strong></div><div class="bill-line"><span>Tax (${((current.taxRate ?? 0.18) * 100).toFixed(0)}%)</span><strong>${money(current.gst)}</strong></div><div class="bill-line"><span>Invoice</span><strong>${esc(current.id)}</strong></div><div class="bill-line"><span>Due date</span><strong>${formatDate(current.dueDate, { day: "numeric", month: "short", year: "numeric" })}</strong></div><div class="bill-line total"><span>Total due</span><strong>${money(current.total)}</strong></div>` : `<div class="empty-state">No invoices yet.</div>`}</section></div>`;
+  html += `<div class="toolbar billing-toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="billing-search" type="search" aria-label="Search invoices" placeholder="Search invoice, plan, customer, or period" value="${esc(billingSearch)}"></label><label class="filter-label">Status<select id="billing-status-filter" class="filter-select"><option value="ALL" ${billingStatusFilter === "ALL" ? "selected" : ""}>All statuses</option>${["UNPAID", "OVERDUE", "PAID"].map(status => `<option value="${status}" ${billingStatusFilter === status ? "selected" : ""}>${status.charAt(0) + status.slice(1).toLowerCase()}</option>`).join("")}</select></label><label class="filter-label">Sort by<select id="billing-sort" class="filter-select"><option value="newest" ${billingSort === "newest" ? "selected" : ""}>Newest period</option><option value="due-asc" ${billingSort === "due-asc" ? "selected" : ""}>Due date · earliest</option><option value="due-desc" ${billingSort === "due-desc" ? "selected" : ""}>Due date · latest</option><option value="amount-desc" ${billingSort === "amount-desc" ? "selected" : ""}>Amount · high to low</option><option value="amount-asc" ${billingSort === "amount-asc" ? "selected" : ""}>Amount · low to high</option></select></label><span class="billing-count">${bills.length} of ${allBills.length} invoice(s)</span>${query || billingStatusFilter !== "ALL" ? `<button class="link-button" data-action="reset-billing-filters">Clear filters</button>` : ""}</div>`;
   const rows = bills.map(b => {
     const payments = (b.payments || []).map(payment => `<div class="payment-entry"><strong>${esc(payment.paymentId)}</strong><br>${formatDate(payment.paidOn, { day: "numeric", month: "short", year: "numeric" })} · ${money(payment.amount)} · ${esc(payment.method)}</div>`).join("") || `<span class="payment-empty">No payments recorded</span>`;
     const action = ["UNPAID", "OVERDUE"].includes(b.status)
@@ -149,7 +198,7 @@ function renderBilling() {
     return `<tr><td><strong>${esc(b.id)}</strong></td>${role === "admin" ? `<td>${esc(b.customerName || `Customer #${b.customerId}`)}<small class="cell-sub">#${b.customerId}</small></td>` : ""}<td>${esc(b.month)}</td><td>${esc(b.planName || "Internet service")}<small class="cell-sub">Plan #${esc(b.planId ?? "—")}</small></td><td>${money(b.planPrice ?? b.amount)}</td><td>${money(b.gst)}<small class="cell-sub">${((b.taxRate ?? 0.18) * 100).toFixed(0)}% tax</small></td><td><strong>${money(b.total)}</strong></td><td>${formatDate(b.dueDate)}</td><td>${statusBadge(b.status)}</td><td>${payments}</td><td>${action}</td></tr>`;
   }).join("");
   const headers = role === "admin" ? ["Invoice", "Customer", "Billing period", "Plan", "Plan price", "Tax", "Total", "Due date", "Status", "Payment history", "Action"] : ["Invoice", "Billing period", "Plan", "Plan price", "Tax", "Total", "Due date", "Status", "Payment history", "Action"];
-  html += `<section class="panel table-panel">${panelTitle("Invoice history", role === "admin" ? "All customer invoices and payment records" : "Invoices and payment records for your account")}${table(headers, rows)}</section>`;
+  html += `<section class="panel table-panel">${panelTitle("Invoice history", role === "admin" ? "All customer invoices and payment records" : "Invoices and payment records for your account")}${table(headers, rows, "No invoices match these filters.")}</section>`;
   html += `<p class="subtitle section-note">Plan switches take effect next billing period; issued invoices are never recalculated. “Simulate payment” records a project payment only and does not contact a payment gateway.</p>`;
   return html;
 }
@@ -157,12 +206,22 @@ function renderComplaints() {
   const complaints = getComplaints();
   const rows = complaints.filter(x => `${x.id} ${x.type} ${x.description} ${x.status}`.toLowerCase().includes(searchQuery.toLowerCase())).map(x => {
     const cu = state.customers.find(c => c.id === Number(x.customerId));
-    return `<tr><td><strong>${esc(x.id)}</strong><small class="cell-sub">${esc(x.created)}</small></td>${role === "admin" ? `<td>${esc(cu ? cu.name : "Unknown")}</td>` : ""}<td><div class="table-primary"><span class="mini-icon">◎</span><div><strong>${esc(x.type)}</strong><small>${esc(x.description)}</small></div></div></td><td>${statusBadge(x.status)}</td><td>${role === "admin" ? `<select class="filter-select" data-action="update-complaint" data-complaint="${esc(x.id)}"><option ${x.status === "PENDING" ? "selected" : ""}>PENDING</option><option ${x.status === "IN_PROGRESS" ? "selected" : ""}>IN_PROGRESS</option><option ${x.status === "RESOLVED" ? "selected" : ""}>RESOLVED</option><option ${x.status === "CLOSED" ? "selected" : ""}>CLOSED</option></select>` : `<button class="button button-quiet button-small" data-action="complaint-details" data-complaint="${esc(x.id)}">View details</button>`}</td></tr>`;
+    return `<tr><td><strong>${esc(x.id)}</strong><small class="cell-sub">${formatDate(x.created)}</small></td>${role === "admin" ? `<td>${esc(cu ? cu.name : "Unknown")}</td>` : ""}<td><div class="table-primary"><span class="mini-icon">◎</span><div><strong>${esc(x.type)}</strong><small>${esc(x.description)}</small></div></div></td><td>${priorityBadge(x.priority || "NORMAL")}</td><td>${statusBadge(x.status)}</td><td>${role === "admin" ? `<div class="row-actions"><select class="filter-select" data-action="update-complaint" data-complaint="${esc(x.id)}" aria-label="Update ${esc(x.id)} status"><option ${x.status === "PENDING" ? "selected" : ""}>PENDING</option><option ${x.status === "IN_PROGRESS" ? "selected" : ""}>IN_PROGRESS</option><option ${x.status === "RESOLVED" ? "selected" : ""}>RESOLVED</option><option ${x.status === "CLOSED" ? "selected" : ""}>CLOSED</option></select><button class="button button-quiet button-small" data-action="complaint-details" data-complaint="${esc(x.id)}">Timeline & notes</button></div>` : `<button class="button button-quiet button-small" data-action="complaint-details" data-complaint="${esc(x.id)}">View timeline</button>`}</td></tr>`;
   }).join("");
   let html = pageHeading("CUSTOMER SUPPORT", "Support & complaints", "Raise a ticket and follow its progress until it is resolved.", `<button class="button button-primary" data-action="raise-complaint">+ New complaint</button>`);
   html += `<div class="toolbar"><label class="search-box"><span>⌕</span><input id="complaint-search" type="search" placeholder="Search complaints..." value="${esc(searchQuery)}"></label><span class="subtitle">${complaints.length} ticket(s)</span></div>`;
-  html += `<section class="panel table-panel section-no-top">${panelTitle("Support tickets", role === "admin" ? "Review and update all customer complaints" : "Track the status of your requests")}${table(role === "admin" ? ["Ticket", "Customer", "Issue", "Status", "Update status"] : ["Ticket", "Issue", "Status", "Action"], rows, "No complaints match your search.")}</section>`;
+  html += `<section class="panel table-panel section-no-top">${panelTitle("Support tickets", role === "admin" ? "Review priorities, status, and customer updates" : "Track the status and history of your requests")}${table(role === "admin" ? ["Ticket", "Customer", "Issue", "Priority", "Status", "Update"] : ["Ticket", "Issue", "Priority", "Status", "Activity"], rows, "No complaints match your search.")}</section>`;
   return html;
+}
+function priorityBadge(priority) {
+  const value = String(priority || "NORMAL").toUpperCase();
+  const style = value === "URGENT" ? "priority-urgent" : value === "HIGH" ? "priority-high" : value === "LOW" ? "priority-low" : "priority-normal";
+  return `<span class="priority-badge ${style}">${esc(value.charAt(0) + value.slice(1).toLowerCase())}</span>`;
+}
+function renderComplaintTimeline(complaint) {
+  const events = complaint.timeline || [];
+  if (!events.length) return `<p class="timeline-empty">No updates have been recorded yet.</p>`;
+  return `<ol class="timeline">${events.map(item => `<li class="timeline-item"><span class="timeline-marker"></span><div class="timeline-copy"><div class="timeline-meta"><strong>${esc(item.actor || "System")}</strong><time>${formatDateTime(item.timestamp)}</time></div><p>${esc(item.detail || item.action || "Ticket updated")}</p></div></li>`).join("")}</ol>`;
 }
 function openModal(title, eyebrow, body, onSubmit, submitLabel = "Save") {
   const modal = document.getElementById("modal");
@@ -242,6 +301,31 @@ async function cancelScheduledPlanChange() {
   await refreshState(); toast("Scheduled plan change cancelled; current plan remains active.");
 }
 async function markPaid(id) { await api(`/bills/${encodeURIComponent(id)}/pay`, "POST", { method: "SIMULATED" }); await refreshState(); toast(`Simulated payment recorded for ${id}.`); }
+function openComplaintDetails(complaint) {
+  if (!complaint) return;
+  const assigned = complaint.assignedTo || "";
+  const adminFields = role === "admin" ? `<div class="form-grid ticket-update-fields"><div class="form-field"><label for="ticket-status">Status</label><select id="ticket-status" name="status"><option ${complaint.status === "PENDING" ? "selected" : ""}>PENDING</option><option ${complaint.status === "IN_PROGRESS" ? "selected" : ""}>IN_PROGRESS</option><option ${complaint.status === "RESOLVED" ? "selected" : ""}>RESOLVED</option><option ${complaint.status === "CLOSED" ? "selected" : ""}>CLOSED</option></select></div><div class="form-field"><label for="ticket-priority">Priority</label><select id="ticket-priority" name="priority">${["LOW", "NORMAL", "HIGH", "URGENT"].map(value => `<option ${String(complaint.priority || "NORMAL").toUpperCase() === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="form-field full"><label for="ticket-assignee">Assigned to</label><input id="ticket-assignee" name="assignedTo" maxlength="80" value="${esc(assigned)}" placeholder="Team or staff member"></div><div class="form-field full"><label for="ticket-note">Update note</label><textarea id="ticket-note" name="note" maxlength="500" placeholder="Add a customer-visible progress update (optional)"></textarea></div></div>` : "";
+  const body = `<div class="ticket-overview"><div class="ticket-overview-item"><span>Issue</span><strong>${esc(complaint.type)}</strong></div><div class="ticket-overview-item"><span>Priority</span>${priorityBadge(complaint.priority || "NORMAL")}</div><div class="ticket-overview-item"><span>Status</span>${statusBadge(complaint.status)}</div><div class="ticket-overview-item"><span>Assigned to</span><strong>${esc(assigned || "Not assigned")}</strong></div></div><div class="form-field detail-copy"><label>Description</label><p class="subtitle">${esc(complaint.description)}</p></div>${adminFields}<div class="timeline-heading"><h3>Ticket timeline</h3><span>${(complaint.timeline || []).length} update(s)</span></div>${renderComplaintTimeline(complaint)}`;
+  openModal(complaint.id, role === "admin" ? "SUPPORT TICKET · ADMIN UPDATE" : "SUPPORT TICKET · HISTORY", body, async fd => {
+    if (role !== "admin") return true;
+    await api(`/complaints/${encodeURIComponent(complaint.id)}`, "PATCH", {
+      status: String(fd.get("status") || ""), priority: String(fd.get("priority") || ""),
+      assignedTo: String(fd.get("assignedTo") || "").trim(), note: String(fd.get("note") || "").trim()
+    });
+    await refreshState(); toast(`${complaint.id} updated and added to its timeline.`);
+  }, role === "admin" ? "Save ticket update" : "Close");
+}
+function addServiceNotice() {
+  const body = `<div class="form-field"><label for="notice-title">Notice title</label><input id="notice-title" name="title" required maxlength="90" placeholder="e.g. Planned fibre maintenance"></div><div class="form-field"><label for="notice-area">Service area</label><input id="notice-area" name="area" required maxlength="100" placeholder="e.g. Bengaluru or All service areas"><small class="field-hint">For a local notice, use text found in customer service addresses. Use “All service areas” to notify everyone.</small></div><div class="form-field"><label for="notice-start">Scheduled start (optional)</label><input id="notice-start" name="startsAt" type="datetime-local"></div><div class="form-field"><label for="notice-status">Notice status</label><select id="notice-status" name="status"><option>SCHEDULED</option><option>ACTIVE</option><option>RESOLVED</option><option>CANCELLED</option></select></div><div class="form-field"><label for="notice-message">Customer message</label><textarea id="notice-message" name="message" required minlength="8" maxlength="500" placeholder="Explain what customers should expect."></textarea></div><p class="subtitle">This portal publishes project notices only. It is not connected to a live network monitoring system.</p>`;
+  openModal("Publish service notice", "ADMIN · SERVICE UPDATES", body, async fd => {
+    const notice = await api("/notices", "POST", {
+      title: String(fd.get("title") || "").trim(), area: String(fd.get("area") || "").trim(),
+      startsAt: String(fd.get("startsAt") || "").trim(), status: String(fd.get("status") || "SCHEDULED"),
+      message: String(fd.get("message") || "").trim()
+    });
+    await refreshState(); toast(`${notice.id} published.`);
+  }, "Publish notice");
+}
 function downloadText(filename, content, type = "text/plain") {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -284,6 +368,8 @@ function handleAction(action, el) {
     case "subscribe": subscribe(Number(el.dataset.plan)); break;
     case "cancel-plan-change": cancelScheduledPlanChange().catch(e => toast(e.message, true)); break;
     case "pay": markPaid(el.dataset.bill).catch(e => toast(e.message, true)); break;
+    case "add-notice": addServiceNotice(); break;
+    case "reset-billing-filters": billingSearch = ""; billingStatusFilter = "ALL"; billingSort = "newest"; render(); break;
     case "download-bills": downloadBills(); break;
     case "export": generateReport().catch(e => toast(e.message, true)); break;
     case "cancel-report": cancelReport().catch(e => toast(e.message, true)); break;
@@ -297,7 +383,7 @@ function handleAction(action, el) {
     }
     case "complaint-details": {
       const c = state.complaints.find(x => x.id === el.dataset.complaint);
-      if (c) openModal(c.id, "SUPPORT TICKET", `<div class="bill-line"><span>Issue type</span><strong>${esc(c.type)}</strong></div><div class="bill-line"><span>Status</span><strong>${esc(c.status)}</strong></div><div class="form-field detail-copy"><label>Description</label><p class="subtitle">${esc(c.description)}</p></div><p class="subtitle">Created ${esc(c.created)}.</p>`, () => true, "Close");
+      openComplaintDetails(c);
       break;
     }
   }
@@ -314,11 +400,21 @@ document.addEventListener("change", async event => {
     try { const id = event.target.dataset.complaint; await api(`/complaints/${encodeURIComponent(id)}`, "PATCH", { status: event.target.value }); await refreshState(); toast(`${id} status updated.`); }
     catch (error) { toast(error.message, true); }
   }
+  if (event.target.id === "billing-status-filter") { billingStatusFilter = event.target.value; render(); }
+  if (event.target.id === "billing-sort") { billingSort = event.target.value; render(); }
+  if (event.target.matches('[data-action="update-notice"]')) {
+    try {
+      const notice = await api(`/notices/${encodeURIComponent(event.target.dataset.notice)}`, "PATCH", { status: event.target.value });
+      await refreshState(); toast(`${notice.id} status changed to ${notice.status.toLowerCase()}.`);
+    } catch (error) { toast(error.message, true); }
+  }
 });
 document.addEventListener("input", event => {
-  if (event.target.id === "complaint-search" || event.target.id === "customer-search") {
+  if (["complaint-search", "customer-search", "billing-search"].includes(event.target.id)) {
     const id = event.target.id, pos = event.target.selectionStart;
-    if (id === "complaint-search") searchQuery = event.target.value; else customerSearch = event.target.value;
+    if (id === "complaint-search") searchQuery = event.target.value;
+    else if (id === "customer-search") customerSearch = event.target.value;
+    else billingSearch = event.target.value;
     render(); const input = document.getElementById(id); if (input) { input.focus(); input.setSelectionRange(pos, pos); }
   }
 });
@@ -331,6 +427,14 @@ document.addEventListener("submit", async event => {
       await refreshState(); const p = currentPlan();
       if (p && usage.used > p.data) toast("Usage added. This account is over its plan allowance.", true);
       else toast(`${gb.toFixed(1)} GB added to the account.`);
+    } catch (error) { toast(error.message, true); }
+  }
+  if (event.target.id === "usage-alert-form") {
+    event.preventDefault();
+    try {
+      const thresholdPercent = Number(new FormData(event.target).get("thresholdPercent"));
+      await api(`/customers/${activeCustomerId}/usage-alert`, "PATCH", { thresholdPercent });
+      await refreshState(); toast(`Usage alert set to ${thresholdPercent}%.`);
     } catch (error) { toast(error.message, true); }
   }
 });
