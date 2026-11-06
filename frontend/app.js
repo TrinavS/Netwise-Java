@@ -73,11 +73,12 @@ function render() {
   document.getElementById("customer-switch-wrap").hidden = role === "admin" || state.customers.length < 2;
   document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.page === currentPage));
   const renderers = { dashboard: renderDashboard, plans: renderPlans, usage: renderUsage, billing: renderBilling, complaints: renderComplaints };
+  root.dataset.page = currentPage;
   root.innerHTML = renderers[currentPage](); if (currentPage === "dashboard") updateDonut();
 }
 function updateDonut() {
   const p = currentPlan(), u = currentUsage(), percent = p ? Math.min(100, u.used / p.data * 100) : 0;
-  const donut = document.querySelector(".donut"); if (donut) donut.style.background = `conic-gradient(var(--blue) 0 ${percent}%, #edf0ff ${percent}% 100%)`;
+  const donut = document.querySelector(".donut"); if (donut) donut.style.background = `conic-gradient(#356c4f 0 ${percent}%, #edf1e9 ${percent}% 100%)`;
   const val = document.getElementById("donut-percent"); if (val) val.textContent = `${Math.round(percent)}%`;
 }
 function renderDashboard() {
@@ -88,7 +89,7 @@ function renderDashboard() {
   const remaining = p ? Math.max(0, p.data - u.used) : 0, percent = p ? Math.min(100, u.used / p.data * 100) : 0;
   const activeComplaints = getComplaints(c.id).filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length;
   const actions = role === "admin" ? `<button class="button button-quiet" data-action="export">Generate report</button><button class="button button-primary" data-action="add-customer">+ Add customer</button>` : `<button class="button button-quiet" data-page="plans">Browse plans</button><button class="button button-primary" data-action="raise-complaint">+ Raise complaint</button>`;
-  let html = pageHeading(role === "admin" ? "ADMIN OVERVIEW" : "YOUR ACCOUNT", role === "admin" ? "ISP overview" : `Good day, ${esc(c.name.split(" ")[0])} 👋`, role === "admin" ? "Manage customers, plans, billing, and support activity." : "Here’s what’s happening with your internet connection today.", actions);
+  let html = pageHeading(role === "admin" ? "ADMIN OVERVIEW" : "YOUR ACCOUNT", role === "admin" ? "ISP overview" : `Welcome back, ${esc(c.name.split(" ")[0])}`, role === "admin" ? "Manage customers, plans, billing, and support activity." : "Here’s what’s happening with your internet connection today.", actions);
   if (role === "admin" && reportStatus) html += `<section class="panel report-job"><div class="report-job-head"><div><strong>Admin report</strong><p>${esc(reportStatus.message || "Generating report…")}</p></div>${statusBadge(reportStatus.status)}${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<button class="button button-danger button-small" data-action="cancel-report">Cancel</button>` : ""}</div>${["QUEUED", "RUNNING"].includes(reportStatus.status) ? `<div class="progress"><span style="width:${Number(reportStatus.progress) || 0}%"></span></div>` : ""}</section>`;
   if (role === "admin") {
     html += `<div class="grid stats-grid">${stat("Total customers", state.customers.length, "Registered accounts", "♙")}${stat("Active subscriptions", state.subscriptions.filter(s => s.status === "ACTIVE").length, "Across all customers", "◈")}${stat("Outstanding bills", money(state.bills.filter(x => ["UNPAID", "OVERDUE"].includes(x.status)).reduce((a, x) => a + x.total, 0)), "Unpaid or overdue", "▤")}${stat("Open complaints", state.complaints.filter(x => !["RESOLVED", "CLOSED"].includes(x.status)).length, "Need attention", "◎")}</div>`;
