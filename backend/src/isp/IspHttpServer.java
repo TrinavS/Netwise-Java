@@ -3,6 +3,8 @@ package isp;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -152,11 +154,13 @@ public class IspHttpServer implements AutoCloseable {
             }
             String type = Files.probeContentType(file);
             if (type == null) type = "application/octet-stream";
-            byte[] content = Files.readAllBytes(file);
             exchange.getResponseHeaders().set("Content-Type", type + (type.startsWith("text/") ? "; charset=utf-8" : ""));
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
-            exchange.sendResponseHeaders(200, content.length);
-            exchange.getResponseBody().write(content);
+            exchange.sendResponseHeaders(200, Files.size(file));
+            try (InputStream input = Files.newInputStream(file);
+                 OutputStream output = exchange.getResponseBody()) {
+                input.transferTo(output);
+            }
         } catch (RuntimeException exception) {
             send(exchange, 400, "Invalid file path");
         } finally { exchange.close(); }

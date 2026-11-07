@@ -79,7 +79,17 @@ For a detailed concept-by-concept map, presentation wording, and honest coverage
 - **Strings and regex:** validated email/phone patterns, status/search strings, `StringBuilder` report generation, and `StringBuffer` invoice summaries.
 - **Exceptions:** checked domain exceptions for missing customers/plans and invalid customer, usage, or complaint data; unchecked validation errors are translated to HTTP error responses.
 - **Multithreading:** fixed thread pool for reports, synchronized service and job state, `wait`/`notifyAll` for report progress communication, and interruption when a report is cancelled.
-- **File handling and JDBC:** the HTTP server reads frontend files; generated Java reports are written to and read from `backend/exports/`; PostgreSQL state uses JDBC.
+- **Java I/O and file handling:** `IspHttpServer.handleStatic()` demonstrates byte-stream input and output with `java.io.InputStream` and `java.io.OutputStream`: it opens frontend files with `Files.newInputStream()` and copies their bytes to the HTTP response using `InputStream.transferTo()`. `ReportFileStore.writeReport()` and `readReport()` demonstrate UTF-8 character/text file output and input with `Files.writeString()` and `Files.readString()`; generated reports are stored under `backend/exports/`. PostgreSQL state uses JDBC.
+
+### Demonstrate the Java I/O stream classes
+
+From the project root, run:
+
+```powershell
+mvn -q compile exec:java "-Dexec.mainClass=isp.StreamDemo"
+```
+
+The demo writes a temporary binary file with `FileOutputStream`, buffered and data output streams, reads it back with `FileInputStream`, buffered and data input streams, and formats the verified values through `PrintStream`. It deletes the temporary file when finished. A successful run prints the three decoded values followed by `PASS`. `InputStream` and `OutputStream` are also used by the running web server when it serves frontend files.
 
 ## Team areas
 

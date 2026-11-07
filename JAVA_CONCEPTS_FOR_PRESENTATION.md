@@ -19,7 +19,7 @@
 | Strings and string functions | `IspService.java` — input trimming, validation, `buildReport()`; `ComplaintManager.java` — string/status comparisons; `Invoice.java` — `getSummary()`; `Json.java` — `stringify()` |
 | Exception handling | `InvalidCustomerException.java`, `InvalidPlanException.java`, `InvalidUsageException.java`, `InvalidComplaintException.java`, `CustomerNotFoundException.java`, `PlanNotFoundException.java`; `IspService.java` — `throws`; `IspHttpServer.java` — `handleApi()` `try`/`catch` |
 | Multithreading | `ReportService.java` — `start()`, fixed thread pool, `ReportJob.update()`, `awaitSnapshot()`, `cancel()`; `NotificationThread.java` — `run()`; `IspHttpServer.java` — request executor |
-| File handling | `IspHttpServer.java` — `handleStatic()`, `Files.readAllBytes()`; `ReportFileStore.java` — `writeReport()`, `readReport()`; `IspHttpServer.java` — `GET /api/reports/{id}/file` |
+| Java I/O streams and file handling | `IspHttpServer.java` uses `InputStream` and `OutputStream` to send frontend files. `StreamDemo.java` demonstrates `BufferedInputStream`, `BufferedOutputStream`, `DataInputStream`, `DataOutputStream`, `FileInputStream`, `FileOutputStream`, and `PrintStream`. `ReportFileStore.java` demonstrates UTF-8 text file handling. |
 | JDBC | `JdbcStore.java` — `connect()`, `initialize()`, `load()`, `save()`; `Main.java` — `main()` |
 | REST API | `IspHttpServer.java` — `handleApi()`, `/api/health`, `/api/state`, customer, plan, subscription, billing, complaint, and report routes |
 | `final` keyword | `Customer.java` — `customerId`; `Invoice.java` — issued invoice fields; `PaymentRecord.java` — payment fields; `IspService.java` — constants; `JdbcStore.java` — connection settings |
