@@ -5,7 +5,7 @@ Responsive HTML, CSS, and JavaScript portal served by the Java application. The 
 ## Run it
 
 Start the Java server from the project root using the commands in the root `README.md`, then open `http://127.0.0.1:8080`. Opening `index.html` directly will not connect to the backend API.
-Start the Postgre server before running the required
+Start the Postgre server before running the required commands in Windows Command Prompt.
 
 ## Main screens
 
